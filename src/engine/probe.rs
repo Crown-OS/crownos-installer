@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, bail};
 use serde::Deserialize;
 
 /// Where archiso mounts the medium it booted from.
@@ -444,7 +444,14 @@ fn read_block_devices(system: &dyn System) -> Result<BTreeMap<String, BlockDevic
 
     let json = system.run(
         "lsblk",
-        &["--json", "--bytes", "--list", "--paths", "--output", LSBLK_COLUMNS],
+        &[
+            "--json",
+            "--bytes",
+            "--list",
+            "--paths",
+            "--output",
+            LSBLK_COLUMNS,
+        ],
     )?;
     let output: Output = serde_json::from_str(&json).context("could not parse `lsblk --json`")?;
 
@@ -564,9 +571,12 @@ fn read_table(
         // intend to touch.
         let scanned = match device.and_then(|d| d.fstype.clone()) {
             Some(fstype) => Some((Some(fstype), device.and_then(|d| d.label.clone()))),
-            None => blkid(system, &entry.node)
-                .ok()
-                .map(|fields| (lower(fields.get("TYPE").cloned()), fields.get("LABEL").cloned())),
+            None => blkid(system, &entry.node).ok().map(|fields| {
+                (
+                    lower(fields.get("TYPE").cloned()),
+                    fields.get("LABEL").cloned(),
+                )
+            }),
         };
         let (fstype, label) = scanned.unwrap_or((None, None));
 
@@ -915,7 +925,9 @@ mod tests {
         // PARTUUIDs come out of `sfdisk` upper case and out of `lsblk` lower
         // case; everything downstream compares them as strings, so they are
         // normalized here or not at all.
-        let esp = disk.partition("0FC63DAF-8483-4772-8E79-3D69D8477DE4").expect("esp");
+        let esp = disk
+            .partition("0FC63DAF-8483-4772-8E79-3D69D8477DE4")
+            .expect("esp");
         assert_eq!(esp.number, 1);
         assert_eq!(esp.fstype.as_deref(), Some("vfat"));
         assert_eq!(esp.start_sector, 2048);
@@ -947,16 +959,25 @@ mod tests {
             first_usable_sector: 34,
             last_usable_sector: 102_400,
             partitions: vec![
-                partition(1, 4096, 4096),   // 4096..=8191
-                partition(2, 20480, 4096),  // 20480..=24575
+                partition(1, 4096, 4096),  // 4096..=8191
+                partition(2, 20480, 4096), // 20480..=24575
             ],
         };
         assert_eq!(
             disk.free_gaps(),
             vec![
-                Gap { start_sector: 34, sectors: 4062 },
-                Gap { start_sector: 8192, sectors: 12288 },
-                Gap { start_sector: 24576, sectors: 77825 },
+                Gap {
+                    start_sector: 34,
+                    sectors: 4062
+                },
+                Gap {
+                    start_sector: 8192,
+                    sectors: 12288
+                },
+                Gap {
+                    start_sector: 24576,
+                    sectors: 77825
+                },
             ]
         );
     }
@@ -985,9 +1006,7 @@ mod tests {
             ..partition(4, 0, 1)
         };
         assert!(part.is_source_of("/dev/sda4"));
-        assert!(part.is_source_of(
-            "/dev/disk/by-partuuid/AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
-        ));
+        assert!(part.is_source_of("/dev/disk/by-partuuid/AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"));
         assert!(!part.is_source_of("/dev/sda3"));
         assert!(!part.is_source_of("tmpfs"));
     }

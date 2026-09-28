@@ -99,7 +99,7 @@ use std::fmt;
 
 use super::exec::Cmd;
 use super::plan::{
-    align_down, align_up, bytes, ALIGNMENT_BYTES, TYPE_LINUX_ROOT_X86_64, TYPE_LINUX_SWAP,
+    ALIGNMENT_BYTES, TYPE_LINUX_ROOT_X86_64, TYPE_LINUX_SWAP, align_down, align_up, bytes,
 };
 use super::probe::{Disk, Partition, SystemSnapshot};
 
@@ -368,15 +368,12 @@ impl DiskOp {
                 format,
                 ..
             } => {
-                let size = bytes(
-                    (end_sector.saturating_sub(*start_sector) + 1) * u64::from(*sector_size),
-                );
+                let size =
+                    bytes((end_sector.saturating_sub(*start_sector) + 1) * u64::from(*sector_size));
                 match format {
-                    Some(fs) => format!(
-                        "Creating {path} — {size} {} as {}",
-                        kind.label(),
-                        fs.name()
-                    ),
+                    Some(fs) => {
+                        format!("Creating {path} — {size} {} as {}", kind.label(), fs.name())
+                    }
                     None => format!("Creating {path} — {size} {}", kind.label()),
                 }
             }
@@ -499,10 +496,9 @@ impl fmt::Display for OpRefusal {
                 "{path} is the medium this installer is running from. Editing it would \
                  end the install part way through, so it is left alone."
             ),
-            Self::Overlaps { path, with } => write!(
-                f,
-                "{path} would overlap {with}. Nothing has been changed."
-            ),
+            Self::Overlaps { path, with } => {
+                write!(f, "{path} would overlap {with}. Nothing has been changed.")
+            }
             Self::OutsideDisk {
                 path,
                 last_usable_sector,
@@ -705,7 +701,9 @@ pub fn plan_ops(
                     if let Err(reason) = offline_shrinkable(fstype.as_deref()) {
                         return Err(OpRefusal::UnsupportedShrink {
                             path: path.clone(),
-                            fstype: fstype.clone().unwrap_or_else(|| "an unknown filesystem".to_owned()),
+                            fstype: fstype
+                                .clone()
+                                .unwrap_or_else(|| "an unknown filesystem".to_owned()),
                             reason,
                         });
                     }
@@ -718,7 +716,10 @@ pub fn plan_ops(
                         with: other,
                     });
                 }
-                let Some(entry) = projected.partitions.iter_mut().find(|p| p.number == *number)
+                let Some(entry) = projected
+                    .partitions
+                    .iter_mut()
+                    .find(|p| p.number == *number)
                 else {
                     return Err(OpRefusal::UnknownPartition { path: path.clone() });
                 };
@@ -751,11 +752,7 @@ pub fn plan_ops(
 
 /// The two rules about touching something that is already there: it must exist,
 /// it must not be mounted, and it must not be what we are running from.
-fn guard_existing(
-    disk: &Disk,
-    snapshot: &SystemSnapshot,
-    device: &str,
-) -> Result<(), OpRefusal> {
+fn guard_existing(disk: &Disk, snapshot: &SystemSnapshot, device: &str) -> Result<(), OpRefusal> {
     let Some(partition) = disk.partitions.iter().find(|p| p.path == device) else {
         return Err(OpRefusal::UnknownPartition {
             path: device.to_owned(),
@@ -803,11 +800,7 @@ fn overlapping(disk: &Disk, start: u64, end: u64, exclude: Option<u32>) -> Optio
 /// has been taken off both ends. Shared by the UI (which offers to fill a gap)
 /// and the ISO planner (which lays a root and a swap out inside one), so the two
 /// cannot disagree about where a partition lands.
-pub fn carve(
-    disk: &Disk,
-    gap: super::probe::Gap,
-    size_bytes: u64,
-) -> Option<(u64, u64)> {
+pub fn carve(disk: &Disk, gap: super::probe::Gap, size_bytes: u64) -> Option<(u64, u64)> {
     let sector = u64::from(disk.sector_size);
     let alignment = ALIGNMENT_BYTES / sector;
     let start = align_up(gap.start_sector, alignment);
@@ -911,10 +904,7 @@ fn create_commands(op: &DiskOp) -> Vec<Cmd> {
             "s".to_owned(),
             "mkpart".to_owned(),
             name.clone(),
-            format
-                .unwrap_or(Filesystem::Ext4)
-                .parted_hint()
-                .to_owned(),
+            format.unwrap_or(Filesystem::Ext4).parted_hint().to_owned(),
             format_sector(*start_sector),
             format_sector(*end_sector),
         ],
@@ -1095,7 +1085,7 @@ fn format_sector(sector: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::probe::{self, fixture, Gap};
+    use crate::engine::probe::{self, Gap, fixture};
 
     const MIB: u64 = 1024 * 1024;
     const GIB: u64 = 1024 * MIB;
@@ -1110,7 +1100,14 @@ mod tests {
     }
 
     fn create(number: u32, start: u64, end: u64) -> DiskOp {
-        create_as(number, start, end, PartitionKind::LinuxData, Filesystem::Ext4, "data")
+        create_as(
+            number,
+            start,
+            end,
+            PartitionKind::LinuxData,
+            Filesystem::Ext4,
+            "data",
+        )
     }
 
     /// `..spread` does not work on an enum variant, so the variants a test wants
@@ -1214,8 +1211,8 @@ mod tests {
     fn the_projected_table_stays_sorted_by_start_sector() {
         let (disk, snapshot) = standard();
         // In the middle of the trailing free region, i.e. after sda4.
-        let projection = plan_ops(&disk, &snapshot, &[create(5, 900_000_000, 950_000_000)])
-            .expect("create");
+        let projection =
+            plan_ops(&disk, &snapshot, &[create(5, 900_000_000, 950_000_000)]).expect("create");
         let starts: Vec<u64> = projection
             .disk
             .partitions
@@ -1486,7 +1483,9 @@ mod tests {
             .map(ToString::to_string)
             .collect();
         assert!(
-            rendered.iter().any(|line| line == "resize2fs /dev/nvme0n1p2 4000s"),
+            rendered
+                .iter()
+                .any(|line| line == "resize2fs /dev/nvme0n1p2 4000s"),
             "the size must be in resize2fs' unit, not the disk's:\n{rendered:#?}"
         );
         assert!(
@@ -1540,7 +1539,9 @@ mod tests {
             .map(ToString::to_string)
             .collect();
         assert!(
-            rendered.iter().any(|line| line == "parted --script /dev/sda set 5 esp on"),
+            rendered
+                .iter()
+                .any(|line| line == "parted --script /dev/sda set 5 esp on"),
             "{rendered:#?}"
         );
         assert!(

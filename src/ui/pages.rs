@@ -25,25 +25,24 @@
 //! answer.
 
 use crownuikit::config::theme;
-use crownuikit::layouts::hero_wizard::{hero_pane, hero_wizard, HeroStep, COLUMN_WIDTH};
+use crownuikit::layouts::hero_wizard::{COLUMN_WIDTH, HeroStep, hero_pane, hero_wizard};
 use crownuikit::widgets::{
-    button, callout, choice_list, divider, icon, pane, progress, radio_group, search,
-    segmented_bar, status, text_input, ButtonSize, ButtonVariant, Choice, Radii,
-    Segment, Tone,
-};
-use xilem::masonry::properties::types::AsUnit;
-use xilem::masonry::properties::Padding;
-use xilem::style::Style;
-use xilem::view::{
-    flex_col, flex_row, label, portal, prose, sized_box, CrossAxisAlignment, FlexExt, FlexSpacer,
+    ButtonSize, ButtonVariant, Choice, Radii, Segment, Tone, button, callout, choice_list, divider,
+    icon, pane, progress, radio_group, search, segmented_bar, status, text_input,
 };
 use xilem::WidgetView;
+use xilem::masonry::properties::Padding;
+use xilem::masonry::properties::types::AsUnit;
+use xilem::style::Style;
+use xilem::view::{
+    CrossAxisAlignment, FlexExt, FlexSpacer, flex_col, flex_row, label, portal, prose, sized_box,
+};
 
-use crate::engine::plan::{bytes, Plan, Reclaim};
+use crate::engine::plan::{Plan, Reclaim, bytes};
 use crate::oobe::{Distro, RootFilesystem};
 
-use super::editor::{Row, FILESYSTEMS, KINDS};
-use super::{esp_of, App, Boxed, Page};
+use super::editor::{FILESYSTEMS, KINDS, Row};
+use super::{App, Boxed, Page, esp_of};
 
 /// Gap between the blocks that make up a page's content.
 const BLOCK_GAP: f64 = 14.0;
@@ -97,9 +96,7 @@ fn brand(app: &mut App) -> impl WidgetView<App> + use<> {
         // it in the pane centres a full-width box around text that stays at the
         // left edge. A `label` is as wide as its glyphs, which is what
         // `CrossAxisAlignment::Center` can actually centre.
-        label("CrownOS")
-            .text_size(34.0)
-            .color(theme.text.on_accent),
+        label("CrownOS").text_size(34.0).color(theme.text.on_accent),
         FlexSpacer::Fixed(8.0.px()),
         // The mode line does wrap, so it *is* a `prose` — in a box narrow enough
         // that the centring has something to work with, and with the text
@@ -272,9 +269,11 @@ fn disk(app: &mut App) -> (HeroStep, Boxed, Boxed) {
     let chosen_paths = paths.clone();
 
     let content = flex_col((
-        search(app.search.clone(), |app: &mut App, value| app.search = value)
-            .placeholder("Search disks…")
-            .width(COLUMN_WIDTH),
+        search(app.search.clone(), |app: &mut App, value| {
+            app.search = value
+        })
+        .placeholder("Search disks…")
+        .width(COLUMN_WIDTH),
         (!empty).then(|| {
             choice_list(choices, selected, move |app: &mut App, index| {
                 let Some(path) = chosen_paths.get(index).cloned() else {
@@ -403,7 +402,8 @@ fn space(app: &mut App) -> (HeroStep, Boxed, Boxed) {
         .iter()
         .position(|(fs, _)| *fs == app.target.filesystem)
         .unwrap_or(0);
-    let distro_index = Distro::ALL
+    let distros = Distro::installable();
+    let distro_index = distros
         .iter()
         .position(|distro| *distro == app.target.distro)
         .unwrap_or(0);
@@ -423,23 +423,25 @@ fn space(app: &mut App) -> (HeroStep, Boxed, Boxed) {
                  make some — shrink a partition, or delete one you do not need.",
             )
         }),
-        panel(
-            flex_col((
-                label("Base system".to_owned()).color(theme().text.muted),
-                radio_group(
-                    Distro::ALL.iter().map(|distro| distro.label()),
-                    Some(distro_index),
-                    |app: &mut App, index| {
-                        if let Some(distro) = Distro::ALL.get(index) {
-                            app.target.distro = *distro;
-                            app.restage_plan();
-                        }
-                    },
-                ),
-            ))
-            .gap(ROW_GAP.px())
-            .cross_axis_alignment(CrossAxisAlignment::Start),
-        ),
+        (distros.len() > 1).then(|| {
+            panel(
+                flex_col((
+                    label("Base system".to_owned()).color(theme().text.muted),
+                    radio_group(
+                        distros.iter().map(|distro| distro.label()),
+                        Some(distro_index),
+                        move |app: &mut App, index| {
+                            if let Some(distro) = distros.get(index) {
+                                app.target.distro = *distro;
+                                app.restage_plan();
+                            }
+                        },
+                    ),
+                ))
+                .gap(ROW_GAP.px())
+                .cross_axis_alignment(CrossAxisAlignment::Start),
+            )
+        }),
         panel(
             flex_col((
                 label("Filesystem".to_owned()).color(theme().text.muted),
@@ -491,7 +493,10 @@ fn space(app: &mut App) -> (HeroStep, Boxed, Boxed) {
 /// The filesystems a CrownOS root may be, and what to call them.
 const FILESYSTEM_CHOICES: &[(RootFilesystem, &str)] = &[
     (RootFilesystem::Ext4, "ext4 — the safe choice"),
-    (RootFilesystem::Btrfs, "btrfs — snapshots, no subvolumes yet"),
+    (
+        RootFilesystem::Btrfs,
+        "btrfs — snapshots, no subvolumes yet",
+    ),
 ];
 
 // --- MARK: The partition editor ---
@@ -510,10 +515,7 @@ fn partitions(app: &mut App) -> (HeroStep, Boxed, Boxed) {
     let theme = theme();
 
     let rows = app.editor.rows(&disk, &context.snapshot);
-    let projection_error = app
-        .editor
-        .projection(&disk, &context.snapshot)
-        .err();
+    let projection_error = app.editor.projection(&disk, &context.snapshot).err();
 
     let filter = app.search.trim().to_ascii_lowercase();
     let mut choices = Vec::new();
@@ -544,15 +546,19 @@ fn partitions(app: &mut App) -> (HeroStep, Boxed, Boxed) {
     let fs_index = app.editor.filesystem.min(FILESYSTEMS.len() - 1);
 
     let content = flex_col((
-        search(app.search.clone(), |app: &mut App, value| app.search = value)
-            .placeholder("Search partitions…")
-            .width(COLUMN_WIDTH),
-        sized_box(portal(
-            choice_list(choices, selected, move |app: &mut App, index| {
+        search(app.search.clone(), |app: &mut App, value| {
+            app.search = value
+        })
+        .placeholder("Search partitions…")
+        .width(COLUMN_WIDTH),
+        sized_box(portal(choice_list(
+            choices,
+            selected,
+            move |app: &mut App, index| {
                 app.editor.selected = mapping.get(index).copied();
                 app.editor.problem = None;
-            }),
-        ))
+            },
+        )))
         .height(EDITOR_LIST_HEIGHT.px()),
         // The parameter strip. Deliberately always visible rather than swapped
         // per action: a size field that appeared only after picking "Resize"
@@ -562,8 +568,7 @@ fn partitions(app: &mut App) -> (HeroStep, Boxed, Boxed) {
         panel(
             flex_col((
                 flex_row((
-                    sized_box(label("Size".to_owned()).color(theme.text.muted))
-                        .width(46.0.px()),
+                    sized_box(label("Size".to_owned()).color(theme.text.muted)).width(46.0.px()),
                     text_input(app.editor.size_text.clone(), |app: &mut App, value| {
                         app.editor.size_text = value;
                     })
@@ -580,8 +585,7 @@ fn partitions(app: &mut App) -> (HeroStep, Boxed, Boxed) {
                 .gap(6.0.px())
                 .cross_axis_alignment(CrossAxisAlignment::Center),
                 flex_row((
-                    sized_box(label("Format".to_owned()).color(theme.text.muted))
-                        .width(46.0.px()),
+                    sized_box(label("Format".to_owned()).color(theme.text.muted)).width(46.0.px()),
                     crownuikit::widgets::select(
                         FILESYSTEMS.iter().map(|fs| fs.name()),
                         Some(fs_index),
@@ -592,9 +596,11 @@ fn partitions(app: &mut App) -> (HeroStep, Boxed, Boxed) {
                 .cross_axis_alignment(CrossAxisAlignment::Center),
                 divider(),
                 flex_row((
-                    button("New", |app: &mut App| editor_action(app, EditorAction::Create))
-                        .size(ButtonSize::Small)
-                        .disabled(!on_free),
+                    button("New", |app: &mut App| {
+                        editor_action(app, EditorAction::Create)
+                    })
+                    .size(ButtonSize::Small)
+                    .disabled(!on_free),
                     button("Resize", |app: &mut App| {
                         editor_action(app, EditorAction::Resize)
                     })
@@ -715,10 +721,7 @@ fn editor_action(app: &mut App, action: EditorAction) {
 }
 
 /// A row of the editor's list, as title, subtitle and glyph.
-fn describe_row(
-    disk: &crate::engine::probe::Disk,
-    row: &Row,
-) -> (String, String, &'static str) {
+fn describe_row(disk: &crate::engine::probe::Disk, row: &Row) -> (String, String, &'static str) {
     match row {
         Row::Partition {
             path,
@@ -956,7 +959,11 @@ fn confirm(app: &mut App) -> (HeroStep, Boxed, Boxed) {
     .gap(BLOCK_GAP.px())
     .cross_axis_alignment(CrossAxisAlignment::Fill);
 
-    let primary = if dry_run { "Start dry run" } else { "Install CrownOS" };
+    let primary = if dry_run {
+        "Start dry run"
+    } else {
+        "Install CrownOS"
+    };
     (
         HeroStep::new("Ready to install")
             .subtitle("Read this before continuing.")
@@ -1019,9 +1026,7 @@ fn running(app: &mut App) -> (HeroStep, Boxed, Boxed) {
                 .text_size(13.0)
                 .text_color(theme.text.primary),
                 progress(app.run.fraction()).width(COLUMN_WIDTH - PANEL_PADDING * 2.0),
-                prose(heading)
-                    .text_size(11.0)
-                    .text_color(theme.text.muted),
+                prose(heading).text_size(11.0).text_color(theme.text.muted),
             ))
             .gap(ROW_GAP.px())
             .cross_axis_alignment(CrossAxisAlignment::Fill),
@@ -1034,12 +1039,14 @@ fn running(app: &mut App) -> (HeroStep, Boxed, Boxed) {
         // The log is the one thing on this page that can outgrow the card, so it
         // is the one thing that scrolls.
         sized_box(
-            pane(sized_box(portal(
-                flex_col(lines)
-                    .gap(1.0.px())
-                    .cross_axis_alignment(CrossAxisAlignment::Start),
-            ))
-            .padding(Padding::all(PANEL_PADDING)))
+            pane(
+                sized_box(portal(
+                    flex_col(lines)
+                        .gap(1.0.px())
+                        .cross_axis_alignment(CrossAxisAlignment::Start),
+                ))
+                .padding(Padding::all(PANEL_PADDING)),
+            )
             .fill(theme.surface.sunken)
             .radii(Radii::all(12.0))
             .border(theme.surface.border, 1.0),
@@ -1079,18 +1086,14 @@ fn running(app: &mut App) -> (HeroStep, Boxed, Boxed) {
 fn done(app: &mut App) -> (HeroStep, Boxed, Boxed) {
     let (total, current) = app.step_indicator();
     let dry_run = app.run.was_dry_run;
-    let dual_boot = app
-        .plan()
-        .and_then(|plan| plan.windows.as_ref())
-        .is_some();
+    let dual_boot = app.plan().and_then(|plan| plan.windows.as_ref()).is_some();
 
     let (title, subtitle, notice) = if dry_run {
         (
             "Dry run finished",
             "Nothing was written to the disk.",
-            callout(Tone::Success, "Every step was rehearsed").body(
-                "The log listed each command a real install would have run, in order.",
-            ),
+            callout(Tone::Success, "Every step was rehearsed")
+                .body("The log listed each command a real install would have run, in order."),
         )
     } else if dual_boot {
         (
@@ -1113,7 +1116,9 @@ fn done(app: &mut App) -> (HeroStep, Boxed, Boxed) {
     };
 
     (
-        HeroStep::new(title).subtitle(subtitle).steps(total, current),
+        HeroStep::new(title)
+            .subtitle(subtitle)
+            .steps(total, current),
         Box::new(
             flex_col((notice.view(), FlexSpacer::Flex(1.0)))
                 .gap(BLOCK_GAP.px())

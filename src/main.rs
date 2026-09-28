@@ -40,12 +40,13 @@ mod oobe;
 mod payload;
 mod provenance;
 mod ui;
+mod util;
 
 use std::process::ExitCode;
 
-use engine::exec::{commands_for, Mode, Secrets};
-use engine::plan::{plan, plan_iso, Account, IsoInput, NewIds, PlanInput};
-use engine::probe::{probe, RealSystem};
+use engine::exec::{Mode, Secrets, commands_for};
+use engine::plan::{Account, IsoInput, NewIds, PlanInput, plan, plan_iso};
+use engine::probe::{RealSystem, probe};
 
 /// What was asked for on *our* command line, as opposed to the kernel's.
 #[derive(Debug, Default)]
@@ -352,7 +353,10 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>, distro: oobe::Distro) -
     };
 
     println!("base:     {}", plan.distro.label());
-    println!("disk:     {} ({} byte sectors)", plan.disk, plan.sector_size);
+    println!(
+        "disk:     {} ({} byte sectors)",
+        plan.disk, plan.sector_size
+    );
     println!(
         "root:     {} — {} at sector {}",
         plan.root.path,
@@ -367,7 +371,10 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>, distro: oobe::Distro) -
             swap.start_sector
         );
     }
-    println!("esp:      {} (shared, written at file level only)", plan.esp.path);
+    println!(
+        "esp:      {} (shared, written at file level only)",
+        plan.esp.path
+    );
     match &plan.windows {
         Some(windows) => println!("kept:     {} (never touched)", windows.path),
         None => println!("kept:     nothing on this disk is designated to preserve"),
@@ -378,10 +385,7 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>, distro: oobe::Distro) -
     }
     println!("\ndestructive targets: {:?}", plan.destructive_devices());
     println!("file-level targets:  {:?}", plan.file_level_devices());
-    println!(
-        "authorized to destroy: {:?}\n",
-        plan.authorized_destructive
-    );
+    println!("authorized to destroy: {:?}\n", plan.authorized_destructive);
 
     let secrets = Secrets {
         user_password: "<not used by --print-plan>".to_owned(),
@@ -427,8 +431,8 @@ mod tests {
 
     #[test]
     fn a_base_is_named_the_way_the_payload_names_it() {
-        let options = parse_options(["--distro", "nixos"].into_iter().map(str::to_owned))
-            .expect("parse");
+        let options =
+            parse_options(["--distro", "nixos"].into_iter().map(str::to_owned)).expect("parse");
         assert_eq!(options.distro, oobe::Distro::NixOs);
         assert!(parse_options(["--distro", "gentoo"].into_iter().map(str::to_owned)).is_err());
     }

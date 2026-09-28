@@ -61,7 +61,7 @@ use std::fmt;
 
 use crate::oobe::{Locale, Oobe, RootFilesystem, StagingKind, SwapPlan, UserAccount};
 
-use super::distro::{nixos, Distro, ImperativeDistro};
+use super::distro::{Distro, ImperativeDistro, nixos};
 use super::probe::{Disk, Gap, Partition, SystemSnapshot};
 
 // --- MARK: Constants ---
@@ -177,9 +177,7 @@ impl Account {
         if name.len() > 32 {
             return bad("it is longer than 32 characters");
         }
-        if !name
-            .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
-        {
+        if !name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
             return bad("it must start with a lowercase letter or an underscore");
         }
         if !name
@@ -213,10 +211,7 @@ impl Account {
         if host.starts_with('-') || host.ends_with('-') {
             return bad_host("it may not start or end with a hyphen");
         }
-        if !host
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
+        if !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return bad_host("it may only contain letters, digits and hyphens");
         }
 
@@ -293,7 +288,10 @@ pub enum Refusal {
     },
     /// There is a free region in the right place, and it is too small to install
     /// into.
-    FreeRegionTooSmall { available_bytes: u64, needed_bytes: u64 },
+    FreeRegionTooSmall {
+        available_bytes: u64,
+        needed_bytes: u64,
+    },
     /// The requested swap partition leaves too little room for a root partition.
     SwapDoesNotFit {
         swap_bytes: u64,
@@ -367,7 +365,10 @@ impl fmt::Display for Refusal {
                 "The installer files were staged on partition {partuuid}, and no such \
                  partition exists any more."
             ),
-            Self::StagingMediumStillInUse { partuuid, mounted_at } => write!(
+            Self::StagingMediumStillInUse {
+                partuuid,
+                mounted_at,
+            } => write!(
                 f,
                 "The live installer is still reading from partition {partuuid} \
                  (mounted at {}), and the plan needs to write to it. The system was \
@@ -398,14 +399,21 @@ impl fmt::Display for Refusal {
                 bytes(*actual_start_bytes),
                 bytes(*tolerance_bytes),
             ),
-            Self::FreeRegionTooSmall { available_bytes, needed_bytes } => write!(
+            Self::FreeRegionTooSmall {
+                available_bytes,
+                needed_bytes,
+            } => write!(
                 f,
                 "There is only {} of unallocated space, and CrownOS needs at least \
                  {}.",
                 bytes(*available_bytes),
                 bytes(*needed_bytes)
             ),
-            Self::SwapDoesNotFit { swap_bytes, region_bytes, min_root_bytes } => write!(
+            Self::SwapDoesNotFit {
+                swap_bytes,
+                region_bytes,
+                min_root_bytes,
+            } => write!(
                 f,
                 "A {} swap partition inside {} would leave less than {} for the \
                  system itself.",
@@ -781,8 +789,12 @@ impl Step {
         match self {
             Self::EditPartitionTable(op) => op.label(),
             Self::UnmountStagingMedium { .. } => "Releasing the installer medium".to_owned(),
-            Self::CreatePartition { role: Role::Root, .. } => "Creating the CrownOS partition".to_owned(),
-            Self::CreatePartition { role: Role::Swap, .. } => "Creating the swap partition".to_owned(),
+            Self::CreatePartition {
+                role: Role::Root, ..
+            } => "Creating the CrownOS partition".to_owned(),
+            Self::CreatePartition {
+                role: Role::Swap, ..
+            } => "Creating the swap partition".to_owned(),
             Self::SettleTable { .. } => "Re-reading the partition table".to_owned(),
             Self::MakeFilesystem { filesystem, .. } => {
                 format!("Formatting as {}", filesystem_name(*filesystem))
@@ -801,7 +813,9 @@ impl Step {
             Self::ConfigureKeymap { .. } => "Setting the keyboard layout".to_owned(),
             Self::ConfigureTimezone { .. } => "Setting the time zone".to_owned(),
             Self::ConfigureHostname { .. } => "Naming the computer".to_owned(),
-            Self::BackUpFallbackBootloader { .. } => "Backing up the existing boot loader".to_owned(),
+            Self::BackUpFallbackBootloader { .. } => {
+                "Backing up the existing boot loader".to_owned()
+            }
             Self::InstallBootloader { .. } => "Installing the boot loader".to_owned(),
             Self::InstallKernel { .. } => "Installing the kernel".to_owned(),
             Self::CreateUser { username, .. } => format!("Creating the account for {username}"),
@@ -885,21 +899,21 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
 
     // 4. The partition we must not touch has to be here, on this disk. If it is
     //    not, the disk we are looking at is not the disk that was described.
-    let windows = disk.partition(&oobe.target.windows_partuuid).ok_or_else(|| {
-        Refusal::WindowsPartitionNotFound {
+    let windows = disk
+        .partition(&oobe.target.windows_partuuid)
+        .ok_or_else(|| Refusal::WindowsPartitionNotFound {
             partuuid: oobe.target.windows_partuuid.clone(),
             disk: disk.path.clone(),
-        }
-    })?;
+        })?;
 
     // 5. The staging medium. For `StagingKind::Esp` this is the ESP itself.
     let staging = match oobe.staging.kind {
         StagingKind::Esp => esp,
-        StagingKind::Partition => disk
-            .partition(&oobe.staging.partuuid)
-            .ok_or_else(|| Refusal::StagingPartitionNotFound {
+        StagingKind::Partition => disk.partition(&oobe.staging.partuuid).ok_or_else(|| {
+            Refusal::StagingPartitionNotFound {
                 partuuid: oobe.staging.partuuid.clone(),
-            })?,
+            }
+        })?,
     };
 
     let mut warnings = Vec::new();
@@ -974,7 +988,14 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
         size_bytes: disk.bytes(esp.sectors),
     };
 
-    steps.extend(build_steps(disk, oobe, &layout, &esp_record, &reclaim, &input.account));
+    steps.extend(build_steps(
+        disk,
+        oobe,
+        &layout,
+        &esp_record,
+        &reclaim,
+        &input.account,
+    ));
 
     let plan = Plan {
         disk: disk.path.clone(),
@@ -1073,7 +1094,9 @@ fn choose_region(
         .max_by_key(|gap| {
             let start = disk.bytes(gap.start_sector);
             let end = disk.bytes(gap.end_sector() + 1);
-            let overlap = end.min(expected_end).saturating_sub(start.max(expected_start));
+            let overlap = end
+                .min(expected_end)
+                .saturating_sub(start.max(expected_start));
             (overlap, end - start)
         })
         .expect("gaps is not empty");
@@ -1088,7 +1111,8 @@ fn choose_region(
     // The union reading: the gap plus the staging partition, when the two are
     // adjacent to within one alignment unit.
     let union = {
-        let adjacent_before = staging_end <= gap_start && gap_start - staging_end <= alignment_slack;
+        let adjacent_before =
+            staging_end <= gap_start && gap_start - staging_end <= alignment_slack;
         let adjacent_after = {
             let gap_end = gap_start + gap_size;
             staging_start >= gap_end && staging_start - gap_end <= alignment_slack
@@ -1165,10 +1189,7 @@ fn lay_out(disk: &Disk, oobe: &Oobe, region: Gap, ids: &NewIds) -> Result<Layout
 
     let (swap, root_start) = match oobe.install.swap {
         SwapPlan::Partition { size_bytes } => {
-            let swap_sectors = align_up(
-                size_bytes.div_ceil(u64::from(disk.sector_size)),
-                align,
-            );
+            let swap_sectors = align_up(size_bytes.div_ceil(u64::from(disk.sector_size)), align);
             let swap_end = start + swap_sectors - 1;
             if swap_end >= end || end - swap_end < min_root_sectors {
                 return Err(Refusal::SwapDoesNotFit {
@@ -1729,9 +1750,11 @@ pub fn plan_iso(input: &IsoInput<'_>) -> Result<Plan, Refusal> {
 
     // Every safety rule about editing partitions lives in `disks`, and is
     // applied here by calling it rather than by restating it.
-    let projection = super::disks::plan_ops(disk, input.snapshot, &input.edits)
-        .map_err(|refusal| Refusal::EditRefused {
-            detail: refusal.to_string(),
+    let projection =
+        super::disks::plan_ops(disk, input.snapshot, &input.edits).map_err(|refusal| {
+            Refusal::EditRefused {
+                detail: refusal.to_string(),
+            }
         })?;
     let projected = &projection.disk;
 
@@ -1958,7 +1981,7 @@ pub fn bytes(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::probe::{self, fixture, BOOTMNT};
+    use crate::engine::probe::{self, BOOTMNT, fixture};
     use crate::oobe::{Install, Staging, Target};
 
     // --- Fixtures ---
@@ -2093,7 +2116,10 @@ mod tests {
 
         assert_eq!(plan.esp.path, "/dev/sda1");
         assert_eq!(
-            plan.windows.as_ref().expect("a payload names an OS to keep").path,
+            plan.windows
+                .as_ref()
+                .expect("a payload names an OS to keep")
+                .path,
             "/dev/sda3"
         );
     }
@@ -2153,10 +2179,11 @@ mod tests {
         // Root still ends at the region's end, which is what reclaim needs.
         assert!(plan.root.end_sector > swap.end_sector);
         assert_eq!(plan.swap_file_bytes, None);
-        assert!(plan
-            .steps
-            .iter()
-            .any(|s| matches!(s, Step::MakeSwap { device } if device == &swap.path)));
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| matches!(s, Step::MakeSwap { device } if device == &swap.path))
+        );
     }
 
     #[test]
@@ -2324,7 +2351,10 @@ mod tests {
                     &plan.reclaim,
                     Reclaim::GrowRootOver { staging, .. } if staging.path == *device
                 );
-                assert!(is_new || is_reclaim, "{name}: {device} is neither new nor reclaimed");
+                assert!(
+                    is_new || is_reclaim,
+                    "{name}: {device} is neither new nor reclaimed"
+                );
             }
         }
     }
@@ -2373,7 +2403,11 @@ mod tests {
             matches!(refusal, Refusal::FreeRegionMismatch { .. }),
             "{refusal:?}"
         );
-        assert!(refusal.to_string().contains("not in the state we left it in"));
+        assert!(
+            refusal
+                .to_string()
+                .contains("not in the state we left it in")
+        );
     }
 
     #[test]
@@ -2388,11 +2422,13 @@ mod tests {
     /// installer useless.
     #[test]
     fn small_differences_are_within_tolerance() {
-        assert!(plan_with(|o| {
-            o.target.expected_free_start_bytes = FREE_START + 32 * MIB;
-            o.target.expected_free_bytes = FREE_BYTES - 32 * MIB;
-        })
-        .is_ok());
+        assert!(
+            plan_with(|o| {
+                o.target.expected_free_start_bytes = FREE_START + 32 * MIB;
+                o.target.expected_free_bytes = FREE_BYTES - 32 * MIB;
+            })
+            .is_ok()
+        );
     }
 
     /// The payload may describe the freed region either before or after the
@@ -2455,7 +2491,10 @@ mod tests {
             }
         })
         .expect_err("must refuse");
-        assert!(matches!(refusal, Refusal::SwapDoesNotFit { .. }), "{refusal:?}");
+        assert!(
+            matches!(refusal, Refusal::SwapDoesNotFit { .. }),
+            "{refusal:?}"
+        );
     }
 
     #[test]
@@ -2516,8 +2555,7 @@ mod tests {
     /// reading from is the thing we refuse.
     #[test]
     fn refuses_to_write_to_a_mounted_esp_staging_medium() {
-        let findmnt = fixture::FINDMNT_JSON_ON_MEDIUM
-            .replace(STAGING_PARTUUID, ESP_PARTUUID);
+        let findmnt = fixture::FINDMNT_JSON_ON_MEDIUM.replace(STAGING_PARTUUID, ESP_PARTUUID);
         let refusal = plan_on(&findmnt, |o| {
             o.staging.kind = StagingKind::Esp;
             o.staging.partuuid = ESP_PARTUUID.to_owned();
@@ -2525,7 +2563,10 @@ mod tests {
         })
         .expect_err("must refuse");
         match refusal {
-            Refusal::StagingMediumStillInUse { partuuid, mounted_at } => {
+            Refusal::StagingMediumStillInUse {
+                partuuid,
+                mounted_at,
+            } => {
                 assert_eq!(partuuid, ESP_PARTUUID);
                 assert_eq!(mounted_at, vec![BOOTMNT.to_owned()]);
             }
@@ -2550,8 +2591,7 @@ mod tests {
     fn a_stale_mount_over_an_in_ram_payload_is_unmounted_first() {
         let snapshot =
             snapshot_with_staging_after_the_region(FINDMNT_JSON_IN_RAM_BUT_STILL_MOUNTED);
-        let plan =
-            plan_against(&snapshot, payload_for_staging_after_the_region()).expect("plan");
+        let plan = plan_against(&snapshot, payload_for_staging_after_the_region()).expect("plan");
 
         assert!(
             matches!(plan.reclaim, Reclaim::GrowRootOver { .. }),
@@ -2582,10 +2622,12 @@ mod tests {
             }
             other => panic!("expected the space to be kept, got {other:?}"),
         }
-        assert!(!plan
-            .steps
-            .iter()
-            .any(|s| matches!(s, Step::DeleteStagingPartition { .. })));
+        assert!(
+            !plan
+                .steps
+                .iter()
+                .any(|s| matches!(s, Step::DeleteStagingPartition { .. }))
+        );
     }
 
     /// The reclaimable shape: CROWNSTAGE at the *end* of the disk, immediately
@@ -2637,8 +2679,16 @@ mod tests {
             .position(|l| l.contains("Reclaiming"))
             .expect("delete");
         assert!(unmount < delete, "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Growing the CrownOS partition")));
-        assert!(labels.iter().any(|l| l.contains("Growing the CrownOS filesystem")));
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.contains("Growing the CrownOS partition"))
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.contains("Growing the CrownOS filesystem"))
+        );
     }
 
     #[test]
@@ -2652,10 +2702,12 @@ mod tests {
         })
         .expect("plan");
         assert!(matches!(plan.reclaim, Reclaim::Keep { .. }));
-        assert!(!plan
-            .steps
-            .iter()
-            .any(|s| matches!(s, Step::DeleteStagingPartition { .. })));
+        assert!(
+            !plan
+                .steps
+                .iter()
+                .any(|s| matches!(s, Step::DeleteStagingPartition { .. }))
+        );
     }
 
     #[test]
@@ -2668,17 +2720,18 @@ mod tests {
         })
         .expect("plan");
         match &plan.reclaim {
-            Reclaim::Keep { reason } => assert!(reason.contains("EFI System Partition"), "{reason}"),
+            Reclaim::Keep { reason } => {
+                assert!(reason.contains("EFI System Partition"), "{reason}")
+            }
             other => panic!("the ESP must never be reclaimed, got {other:?}"),
         }
     }
 
     #[test]
     fn refuses_when_the_staging_partition_has_vanished() {
-        let refusal = plan_with(|o| {
-            o.staging.partuuid = "00000000-0000-0000-0000-000000000000".to_owned()
-        })
-        .expect_err("must refuse");
+        let refusal =
+            plan_with(|o| o.staging.partuuid = "00000000-0000-0000-0000-000000000000".to_owned())
+                .expect_err("must refuse");
         assert!(matches!(refusal, Refusal::StagingPartitionNotFound { .. }));
     }
 
@@ -2745,10 +2798,11 @@ mod tests {
     #[test]
     fn a_cramped_esp_is_a_warning_and_not_a_refusal() {
         let plan = plan_with(|o| o.target.esp_size_bytes = 100 * MIB).expect("plan");
-        assert!(plan
-            .warnings
-            .iter()
-            .any(|w| w.contains("shared EFI partition")));
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|w| w.contains("shared EFI partition"))
+        );
     }
 
     #[test]
@@ -2895,7 +2949,10 @@ mod tests {
             edits: Vec::new(),
         })
         .expect_err("no ESP, no install");
-        assert!(matches!(refusal, Refusal::NoEspOnDisk { .. }), "{refusal:?}");
+        assert!(
+            matches!(refusal, Refusal::NoEspOnDisk { .. }),
+            "{refusal:?}"
+        );
         assert!(refusal.to_string().contains("partition editor"));
     }
 
@@ -2972,7 +3029,10 @@ mod tests {
             edits: Vec::new(),
         })
         .expect_err("a username with a space in it is refused");
-        assert!(matches!(refusal, Refusal::InvalidUsername { .. }), "{refusal:?}");
+        assert!(
+            matches!(refusal, Refusal::InvalidUsername { .. }),
+            "{refusal:?}"
+        );
     }
 
     // --- MARK: Base distributions ---
@@ -2997,7 +3057,11 @@ mod tests {
             let plan = iso_plan_with(|t| t.distro = distro).expect("a plan");
             assert_eq!(plan.distro, distro);
             assert_eq!(plan.root, arch.root, "{distro:?}");
-            assert_eq!(plan.destructive_devices(), arch.destructive_devices(), "{distro:?}");
+            assert_eq!(
+                plan.destructive_devices(),
+                arch.destructive_devices(),
+                "{distro:?}"
+            );
             assert_eq!(plan.file_level_devices(), vec!["/dev/sda1"], "{distro:?}");
             assert!(!commands(&plan).contains("hunter2"), "{distro:?}");
         }
@@ -3010,7 +3074,10 @@ mod tests {
             let position = |wanted: fn(&Step) -> bool| plan.steps.iter().position(wanted);
             let backup = position(|s| matches!(s, Step::BackUpFallbackBootloader { .. }));
             let install = position(|s| {
-                matches!(s, Step::InstallBaseSystem { .. } | Step::InstallNixos { .. })
+                matches!(
+                    s,
+                    Step::InstallBaseSystem { .. } | Step::InstallNixos { .. }
+                )
             });
             assert!(backup.is_some() && backup < install, "{distro:?}");
         }
@@ -3023,9 +3090,15 @@ mod tests {
         assert!(log.contains("debootstrap --arch=amd64"), "{log}");
         assert!(log.contains("kernel-install add"), "{log}");
         assert!(log.contains("%sudo ALL=(ALL:ALL) ALL"), "{log}");
-        assert!(log.contains("apt-get install --yes crownos-desktop"), "{log}");
+        assert!(
+            log.contains("apt-get install --yes crownos-desktop"),
+            "{log}"
+        );
         for arch_only in ["pacstrap", "mkinitcpio", "loader/entries/crownos.conf"] {
-            assert!(!log.contains(arch_only), "`{arch_only}` in a Debian plan: {log}");
+            assert!(
+                !log.contains(arch_only),
+                "`{arch_only}` in a Debian plan: {log}"
+            );
         }
     }
 
@@ -3033,7 +3106,10 @@ mod tests {
     fn fedora_is_bootstrapped_with_dnf_and_relabelled_on_first_boot() {
         let plan = iso_plan_with(|t| t.distro = Distro::Fedora).expect("a plan");
         let log = commands(&plan);
-        assert!(log.contains("dnf --installroot=/mnt --releasever="), "{log}");
+        assert!(
+            log.contains("dnf --installroot=/mnt --releasever="),
+            "{log}"
+        );
         assert!(log.contains("glibc-langpack-en"), "{log}");
         assert!(log.contains("/mnt/.autorelabel"), "{log}");
         assert!(log.contains("chronyd.service"), "{log}");
@@ -3042,8 +3118,16 @@ mod tests {
     #[test]
     fn nixos_is_one_configuration_and_nixos_install() {
         let plan = iso_plan_with(|t| t.distro = Distro::NixOs).expect("a plan");
-        assert!(plan.steps.iter().any(|s| matches!(s, Step::ConfigureNixos { .. })));
-        assert!(plan.steps.iter().any(|s| matches!(s, Step::InstallNixos { .. })));
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| matches!(s, Step::ConfigureNixos { .. }))
+        );
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| matches!(s, Step::InstallNixos { .. }))
+        );
         let imperative = plan.steps.iter().find(|s| {
             matches!(
                 s,
@@ -3185,5 +3269,4 @@ mod tests {
             other => panic!("expected Keep, got {other:?}"),
         }
     }
-
 }

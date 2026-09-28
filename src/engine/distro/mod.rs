@@ -15,7 +15,10 @@ mod debian;
 mod fedora;
 pub mod nixos;
 
+use std::sync::LazyLock;
+
 use crate::oobe::RootFilesystem;
+use crate::util::executable::is_on_path;
 
 use super::exec::Cmd;
 
@@ -67,6 +70,28 @@ impl Distro {
             Self::Fedora => Some(ImperativeDistro::Fedora),
             Self::NixOs => None,
         }
+    }
+
+    /// The live-image program that puts this base onto the target disk.
+    pub const fn bootstrap_tool(self) -> &'static str {
+        match self {
+            Self::Arch => "pacstrap",
+            Self::Debian | Self::Ubuntu => "debootstrap",
+            Self::Fedora => "dnf",
+            Self::NixOs => "nixos-install",
+        }
+    }
+
+    /// The bases this live image carries the tools for, in [`Self::ALL`] order.
+    /// An image built for one base offers no choice at all.
+    pub fn installable() -> &'static [Self] {
+        static INSTALLABLE: LazyLock<Vec<Distro>> = LazyLock::new(|| {
+            Distro::ALL
+                .into_iter()
+                .filter(|distro| is_on_path(distro.bootstrap_tool()))
+                .collect()
+        });
+        &INSTALLABLE
     }
 }
 
@@ -192,6 +217,21 @@ mod tests {
         for distro in Distro::ALL {
             assert_eq!(distro.imperative().is_none(), distro == Distro::NixOs);
         }
+    }
+
+    #[test]
+    fn installable_bases_keep_their_order_and_have_their_tool() {
+        let installable = Distro::installable();
+        let in_order: Vec<_> = Distro::ALL
+            .into_iter()
+            .filter(|distro| installable.contains(distro))
+            .collect();
+        assert_eq!(installable, in_order);
+        assert!(
+            installable
+                .iter()
+                .all(|distro| is_on_path(distro.bootstrap_tool()))
+        );
     }
 
     #[test]

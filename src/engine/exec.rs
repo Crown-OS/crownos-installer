@@ -37,8 +37,8 @@ use anyhow::{Context as _, Result};
 
 use crate::oobe::RootFilesystem;
 
-use super::distro::{nixos, Distro, BLS_ENTRY_TOKEN};
-use super::plan::{Plan, Role, Step, ESP_FALLBACK_LOADER};
+use super::distro::{BLS_ENTRY_TOKEN, Distro, nixos};
+use super::plan::{ESP_FALLBACK_LOADER, Plan, Role, Step};
 use super::probe::System;
 
 // --- MARK: Secrets ---
@@ -111,10 +111,7 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
     /// Run a program in the live environment.
-    Run {
-        program: String,
-        args: Vec<String>,
-    },
+    Run { program: String, args: Vec<String> },
     /// Run a program inside the target root, via `arch-chroot`. Works for every
     /// base but NixOS, whose tools live in the Nix store rather than on `PATH`.
     Chroot {
@@ -197,9 +194,17 @@ fn write_display(
     only_if_absent: bool,
 ) -> fmt::Result {
     const INLINE_LIMIT: usize = 512;
-    let guard = if only_if_absent { " (only if absent)" } else { "" };
+    let guard = if only_if_absent {
+        " (only if absent)"
+    } else {
+        ""
+    };
     if contents.len() <= INLINE_LIMIT {
-        write!(f, "cat > {path}{guard} <<'EOF'\n{}EOF", ensure_newline(contents))
+        write!(
+            f,
+            "cat > {path}{guard} <<'EOF'\n{}EOF",
+            ensure_newline(contents)
+        )
     } else {
         write!(f, "cat > {path}{guard}  # {} bytes", contents.len())
     }
@@ -232,9 +237,7 @@ impl Cmd {
     /// Carry out the command.
     fn apply(&self, system: &dyn System) -> Result<String> {
         match self {
-            Self::Run { program, args } => {
-                system.run(program, &borrow(args))
-            }
+            Self::Run { program, args } => system.run(program, &borrow(args)),
             Self::Chroot {
                 root,
                 program,
@@ -463,10 +466,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             filesystem,
             label,
         } => match filesystem {
-            RootFilesystem::Ext4 => vec![Cmd::run(
-                "mkfs.ext4",
-                &["-F", "-L", label, device],
-            )],
+            RootFilesystem::Ext4 => vec![Cmd::run("mkfs.ext4", &["-F", "-L", label, device])],
             RootFilesystem::Btrfs => vec![Cmd::run("mkfs.btrfs", &["-f", "-L", label, device])],
         },
 
@@ -485,10 +485,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             // `fmask`/`dmask` because a FAT32 partition has no permissions of
             // its own and the default would make the boot loader
             // world-writable.
-            Cmd::run(
-                "mount",
-                &["-o", "fmask=0137,dmask=0027", device, at],
-            ),
+            Cmd::run("mount", &["-o", "fmask=0137,dmask=0027", device, at]),
         ],
 
         Step::InstallBaseSystem {
@@ -527,19 +524,26 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
                 RootFilesystem::Btrfs => vec![Cmd::chroot(
                     root,
                     "btrfs",
-                    &["filesystem", "mkswapfile", "--size", &format!("{megabytes}m"), "/swapfile"],
+                    &[
+                        "filesystem",
+                        "mkswapfile",
+                        "--size",
+                        &format!("{megabytes}m"),
+                        "/swapfile",
+                    ],
                 )],
-                RootFilesystem::Ext4 => vec![
-                    Cmd::chroot(
-                        root,
-                        "mkswap",
-                        &["--size", &format!("{megabytes}M"), "--file", "/swapfile"],
-                    ),
-                ],
+                RootFilesystem::Ext4 => vec![Cmd::chroot(
+                    root,
+                    "mkswap",
+                    &["--size", &format!("{megabytes}M"), "--file", "/swapfile"],
+                )],
             };
             commands.push(Cmd::RunAppendingTo {
                 program: "printf".to_owned(),
-                args: vec!["%s\\n".to_owned(), "/swapfile none swap defaults 0 0".to_owned()],
+                args: vec![
+                    "%s\\n".to_owned(),
+                    "/swapfile none swap defaults 0 0".to_owned(),
+                ],
                 path: format!("{root}/etc/fstab"),
             });
             commands
@@ -560,7 +564,11 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             Cmd::chroot(
                 root,
                 "ln",
-                &["-sf", &format!("/usr/share/zoneinfo/{timezone}"), "/etc/localtime"],
+                &[
+                    "-sf",
+                    &format!("/usr/share/zoneinfo/{timezone}"),
+                    "/etc/localtime",
+                ],
             ),
             // `--utc`: the hardware clock is left in UTC, which is what Windows
             // is also configured for on any machine made this century, so the two
@@ -725,10 +733,9 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             Cmd::run("umount", &["--recursive", at]),
         ],
 
-        Step::DeleteStagingPartition { disk, number, .. } => vec![Cmd::run(
-            "sfdisk",
-            &["--delete", disk, &number.to_string()],
-        )],
+        Step::DeleteStagingPartition { disk, number, .. } => {
+            vec![Cmd::run("sfdisk", &["--delete", disk, &number.to_string()])]
+        }
 
         Step::GrowRootPartition {
             disk,
@@ -799,7 +806,8 @@ mod tests {
     }
 
     fn a_plan() -> Plan {
-        let snapshot = probe::probe(&fixture::machine(fixture::FINDMNT_JSON_IN_RAM)).expect("probe");
+        let snapshot =
+            probe::probe(&fixture::machine(fixture::FINDMNT_JSON_IN_RAM)).expect("probe");
         let disk = &snapshot.disks[0];
         let gap = *disk.free_gaps().last().expect("a gap");
 
@@ -863,17 +871,11 @@ mod tests {
     fn dry_run_log(plan: &Plan) -> String {
         let system = fixture::FakeSystem::new();
         let mut log = Vec::new();
-        execute(
-            plan,
-            &secrets(),
-            Mode::DryRun,
-            &system,
-            &mut |event| {
-                if let Event::Log(line) = event {
-                    log.push(line);
-                }
-            },
-        )
+        execute(plan, &secrets(), Mode::DryRun, &system, &mut |event| {
+            if let Event::Log(line) = event {
+                log.push(line);
+            }
+        })
         .expect("a dry run cannot fail");
         assert!(
             system.journal().is_empty(),
@@ -890,8 +892,12 @@ mod tests {
         let mut finished = 0;
         let mut done = false;
         let system = fixture::FakeSystem::new();
-        execute(&plan, &secrets(), Mode::DryRun, &system, &mut |event| {
-            match event {
+        execute(
+            &plan,
+            &secrets(),
+            Mode::DryRun,
+            &system,
+            &mut |event| match event {
                 Event::StepStarted { total, .. } => {
                     assert_eq!(total, plan.steps.len());
                     started += 1;
@@ -903,8 +909,8 @@ mod tests {
                 }
                 Event::Failed { message, .. } => panic!("dry run failed: {message}"),
                 Event::Log(_) => {}
-            }
-        })
+            },
+        )
         .expect("dry run");
 
         assert_eq!(started, plan.steps.len());
@@ -1015,10 +1021,7 @@ mod tests {
         )));
         // And nothing goes near Windows' own directory.
         for command in &commands {
-            assert!(
-                !command.to_string().contains("EFI/Microsoft"),
-                "{command}"
-            );
+            assert!(!command.to_string().contains("EFI/Microsoft"), "{command}");
         }
     }
 
@@ -1038,7 +1041,10 @@ mod tests {
         let note = command.apply(&present).expect("apply");
         assert!(note.contains("left alone"), "{note}");
         assert!(
-            present.journal().iter().all(|line| !line.starts_with("write")),
+            present
+                .journal()
+                .iter()
+                .all(|line| !line.starts_with("write")),
             "nothing should have been written: {:?}",
             present.journal()
         );
@@ -1046,7 +1052,10 @@ mod tests {
         let absent = fixture::FakeSystem::new();
         command.apply(&absent).expect("apply");
         assert!(
-            absent.journal().iter().any(|line| line.starts_with("write")),
+            absent
+                .journal()
+                .iter()
+                .any(|line| line.starts_with("write")),
             "{:?}",
             absent.journal()
         );
@@ -1113,7 +1122,10 @@ mod tests {
             journal.iter().any(|l| l.contains("sfdisk --append")),
             "{journal:?}"
         );
-        assert!(journal.iter().any(|l| l.contains("partprobe")), "{journal:?}");
+        assert!(
+            journal.iter().any(|l| l.contains("partprobe")),
+            "{journal:?}"
+        );
     }
 
     #[test]

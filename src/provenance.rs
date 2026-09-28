@@ -223,7 +223,7 @@ fn attempts_of(error: &LoadError) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::cmdline;
-    use crate::payload::tests::{payload_json, FakeMedium, CMDLINE_PATH};
+    use crate::payload::tests::{CMDLINE_PATH, FakeMedium, payload_json};
 
     /// A plain live ISO: nothing of ours on the command line, no file anywhere.
     /// This used to be `LoadError::NotAStagedBoot` and a dead end.

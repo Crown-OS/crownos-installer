@@ -65,17 +65,15 @@ use std::sync::Arc;
 
 use crownuikit::config::{load_appearance, theme, themed};
 use crownuikit::util::inter_font;
+use xilem::core::{MessageProxy, fork};
 use xilem::dpi::LogicalSize;
-use xilem::core::{fork, MessageProxy};
 use xilem::style::Style;
 use xilem::view::{sized_box, task_raw};
 use xilem::{AnyWidgetView, EventLoop, WidgetView, WindowId, WindowView, Xilem};
 
 use crate::cmdline::CmdlineArgs;
-use crate::engine::exec::{execute, Event, Mode, Secrets};
-use crate::engine::plan::{
-    plan, plan_iso, Account, IsoInput, NewIds, Plan, PlanInput, Refusal,
-};
+use crate::engine::exec::{Event, Mode, Secrets, execute};
+use crate::engine::plan::{Account, IsoInput, NewIds, Plan, PlanInput, Refusal, plan, plan_iso};
 use crate::engine::probe::{Disk, Partition, RealSystem, SystemSnapshot};
 use crate::oobe::{Distro, Locale, Oobe, RootFilesystem, SwapPlan};
 use crate::provenance::Provenance;
@@ -750,7 +748,11 @@ impl App {
     /// Fold one worker message into the state.
     pub fn on_install_event(&mut self, event: Event) {
         match event {
-            Event::StepStarted { index, total, label } => {
+            Event::StepStarted {
+                index,
+                total,
+                label,
+            } => {
                 self.run.step = index;
                 self.run.total = total;
                 self.run.label = label;
@@ -884,8 +886,8 @@ fn install_worker(
     secrets: Option<Secrets>,
     mode: Mode,
 ) -> impl xilem::core::View<App, (), xilem::ViewCtx, Element = xilem::core::NoElement>
-       + xilem::core::ViewMarker
-       + use<> {
++ xilem::core::ViewMarker
++ use<> {
     task_raw(
         move |proxy: MessageProxy<Progress>| {
             let plan = plan.clone();

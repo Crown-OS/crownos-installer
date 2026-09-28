@@ -51,8 +51,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::cmdline::CmdlineArgs;
-use crate::engine::probe::{System, BOOTMNT};
-use crate::oobe::{Oobe, FILE_NAME};
+use crate::engine::probe::{BOOTMNT, System};
+use crate::oobe::{FILE_NAME, Oobe};
 
 /// Where the fallback strategy mounts the staging partition.
 ///
@@ -119,10 +119,7 @@ pub enum Source {
     /// Read straight from the path on the kernel command line.
     CmdlinePath(PathBuf),
     /// Read after mounting the staging partition ourselves.
-    StagingPartition {
-        partuuid: String,
-        relative: String,
-    },
+    StagingPartition { partuuid: String, relative: String },
 }
 
 impl fmt::Display for Source {
@@ -490,12 +487,18 @@ pub(crate) mod tests {
             }
         );
         let journal = medium.journal();
-        let mount = journal.iter().position(|l| l.starts_with("mount")).expect("a mount");
+        let mount = journal
+            .iter()
+            .position(|l| l.starts_with("mount"))
+            .expect("a mount");
         let read = journal
             .iter()
             .position(|l| l.contains(FALLBACK_MOUNT) && l.starts_with("read"))
             .expect("a read inside the mount");
-        let umount = journal.iter().position(|l| l.starts_with("umount")).expect("an unmount");
+        let umount = journal
+            .iter()
+            .position(|l| l.starts_with("umount"))
+            .expect("an unmount");
         assert!(mount < read && read < umount, "{journal:?}");
         assert!(!medium.is_mounted(), "the mount must not be left behind");
     }
@@ -528,10 +531,12 @@ pub(crate) mod tests {
             .on_partition(RELATIVE, &payload_json())
             .with_failing_unmount();
         let located = locate(&staged_args(), &medium).expect("locate");
-        assert!(located
-            .attempts
-            .iter()
-            .any(|a| a.contains("unmounting") && a.contains("failed")));
+        assert!(
+            located
+                .attempts
+                .iter()
+                .any(|a| a.contains("unmounting") && a.contains("failed"))
+        );
     }
 
     #[test]
@@ -580,7 +585,10 @@ pub(crate) mod tests {
             "crownos.stage=1 crownos.stage_partuuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         );
         let error = locate(&args, &FakeMedium::new()).expect_err("must fail");
-        assert!(matches!(error, LoadError::NoRouteToPayload { .. }), "{error:?}");
+        assert!(
+            matches!(error, LoadError::NoRouteToPayload { .. }),
+            "{error:?}"
+        );
     }
 
     // --- Cross-check ---

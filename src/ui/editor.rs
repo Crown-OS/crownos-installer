@@ -28,9 +28,7 @@
 //! [`Editor::problem`] is where a refusal ends up, so the page can say why a
 //! click did nothing rather than appearing to ignore it.
 
-use crate::engine::disks::{
-    carve, fill, plan_ops, DiskOp, Filesystem, PartitionKind, Projection,
-};
+use crate::engine::disks::{DiskOp, Filesystem, PartitionKind, Projection, carve, fill, plan_ops};
 use crate::engine::probe::{Disk, Gap, SystemSnapshot};
 
 /// The filesystems the editor offers, in the order they appear in the picker.
@@ -163,11 +161,7 @@ impl Editor {
     /// Every list the editor draws comes from here rather than from the disk, so
     /// what is on screen is always the table the next operation will be checked
     /// against.
-    pub fn projection(
-        &self,
-        disk: &Disk,
-        snapshot: &SystemSnapshot,
-    ) -> Result<Projection, String> {
+    pub fn projection(&self, disk: &Disk, snapshot: &SystemSnapshot) -> Result<Projection, String> {
         plan_ops(disk, snapshot, &self.ops).map_err(|refusal| refusal.to_string())
     }
 
@@ -193,7 +187,10 @@ impl Editor {
                 end_sector: partition.end_sector(),
                 size_bytes: projected.bytes(partition.sectors),
                 fstype: partition.fstype.clone(),
-                label: partition.label.clone().or_else(|| partition.partlabel.clone()),
+                label: partition
+                    .label
+                    .clone()
+                    .or_else(|| partition.partlabel.clone()),
                 partuuid: partition.partuuid.clone(),
                 pending: !existing.contains(&partition.path.as_str()),
             })
@@ -550,10 +547,7 @@ mod tests {
 
         for _ in 0..2 {
             let rows = editor.rows(&disk, &snapshot);
-            let index = rows
-                .iter()
-                .position(Row::is_free)
-                .expect("some free space");
+            let index = rows.iter().position(Row::is_free).expect("some free space");
             editor.selected = Some(index);
             editor.size_text = "20".to_owned();
             editor.create(&disk, &snapshot);
@@ -611,7 +605,12 @@ mod tests {
     fn an_action_with_no_selection_explains_itself() {
         let (disk, snapshot) = machine();
         let mut editor = Editor::default();
-        for action in [Editor::create, Editor::delete, Editor::resize, Editor::format] {
+        for action in [
+            Editor::create,
+            Editor::delete,
+            Editor::resize,
+            Editor::format,
+        ] {
             editor.problem = None;
             action(&mut editor, &disk, &snapshot);
             assert!(editor.problem.is_some(), "an action must complain");

@@ -15,8 +15,7 @@ use crate::oobe::{
 
 /// The standard fixture machine, and a payload that matches it.
 fn payload_context(user: Option<UserAccount>, auto_install: bool) -> Context {
-    let snapshot =
-        probe::probe(&fixture::machine(fixture::FINDMNT_JSON_IN_RAM)).expect("probe");
+    let snapshot = probe::probe(&fixture::machine(fixture::FINDMNT_JSON_IN_RAM)).expect("probe");
     let disk = &snapshot.disks[0];
     let gap = *disk.free_gaps().last().expect("a gap");
 
@@ -66,8 +65,7 @@ fn payload_context(user: Option<UserAccount>, auto_install: bool) -> Context {
 
 /// The same machine, reached by flashing the image instead.
 fn iso_context() -> Context {
-    let snapshot =
-        probe::probe(&fixture::machine(fixture::FINDMNT_JSON_IN_RAM)).expect("probe");
+    let snapshot = probe::probe(&fixture::machine(fixture::FINDMNT_JSON_IN_RAM)).expect("probe");
     Context {
         provenance: Provenance::Iso,
         notes: vec!["a fixture".to_owned()],
@@ -182,19 +180,17 @@ fn an_iso_refusal_does_not_block_the_wizard() {
     // and `Target::best_for` therefore refuses to guess it, leaving no target.
     let mut app = App::ready(context, Mode::Commit);
     assert_eq!(app.page, Page::Disk, "the user can still pick another disk");
-    assert!(app.context.is_ok(), "an ISO refusal must not block the wizard");
+    assert!(
+        app.context.is_ok(),
+        "an ISO refusal must not block the wizard"
+    );
     assert!(app.plan().is_none());
     assert!(matches!(app.refusal(), Some(Refusal::NoTargetDisk { .. })));
 
     // Choosing it anyway — which the disk page allows, because a GPT disk with
     // no ESP is one partition editor away from being installable — names the
     // actual problem.
-    let disk = app
-        .context()
-        .expect("context")
-        .snapshot
-        .disks[0]
-        .clone();
+    let disk = app.context().expect("context").snapshot.disks[0].clone();
     app.target.retarget(&disk);
     app.restage_plan();
     assert!(
@@ -267,7 +263,10 @@ fn the_editor_returns_to_the_step_it_interrupted() {
 
         app.retreat();
         assert_eq!(app.page, from);
-        assert_eq!(app.editor_return, None, "leaving the editor forgets the way back");
+        assert_eq!(
+            app.editor_return, None,
+            "leaving the editor forgets the way back"
+        );
     }
 }
 
@@ -277,7 +276,12 @@ fn every_page_maps_to_a_step_in_both_flows() {
     for provenance in [
         Provenance::Iso,
         Provenance::WindowsInstaller {
-            oobe: Box::new(payload_context(None, false).oobe().expect("payload").clone()),
+            oobe: Box::new(
+                payload_context(None, false)
+                    .oobe()
+                    .expect("payload")
+                    .clone(),
+            ),
             source: String::new(),
         },
     ] {
@@ -293,7 +297,10 @@ fn every_page_maps_to_a_step_in_both_flows() {
             Page::Blocked,
         ] {
             let (total, index) = page.step(&provenance);
-            assert!(index < total, "{page:?} in {provenance:?}: {index} of {total}");
+            assert!(
+                index < total,
+                "{page:?} in {provenance:?}: {index} of {total}"
+            );
         }
     }
 }
@@ -387,17 +394,15 @@ fn a_queued_edit_becomes_a_step_and_authorizes_itself() {
         plan.steps.iter().map(|s| s.label()).collect::<Vec<_>>()
     );
     assert!(
-        plan.authorized_destructive.contains(&"/dev/sda4".to_owned()),
+        plan.authorized_destructive
+            .contains(&"/dev/sda4".to_owned()),
         "and it should be authorized: {:?}",
         plan.authorized_destructive
     );
     assert!(
         plan.steps
             .iter()
-            .position(|step| matches!(
-                step,
-                crate::engine::plan::Step::EditPartitionTable(_)
-            ))
+            .position(|step| matches!(step, crate::engine::plan::Step::EditPartitionTable(_)))
             .is_some_and(|edit| edit == 0),
         "edits run first — everything else was laid out against the table they leave"
     );
