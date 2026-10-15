@@ -1,10 +1,5 @@
-# Tests and lints the installer. A push to main then asks crownos-iso to
-# rebuild, so the next ISO and nightly repository carry the change.
-#
-# Secrets:
-#   CROWNOS_SOURCES_TOKEN        read access to crownuikit and crownos-config, if private
-#   CROWNOS_ISO_DISPATCH_TOKEN   may create repository dispatches on Crown-OS/crownos-iso
-
+# Formats, builds, lints and tests on every push and pull request. Logic lives
+# in Crown-OS/.github.
 name: CI
 
 on:
@@ -16,52 +11,6 @@ on:
 permissions:
   contents: read
 
-env:
-  RUST_VERSION: 1.97.1
-
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          path: crownos-installer
-      - name: Sibling crates
-        env:
-          TOKEN: ${{ secrets.CROWNOS_SOURCES_TOKEN }}
-        run: |
-          for repo in crownuikit crownos-config; do
-            git clone --quiet --depth 1 "https://${TOKEN:+x-access-token:$TOKEN@}github.com/Crown-OS/$repo.git" "$repo"
-          done
-      - name: Toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libwayland-dev libxkbcommon-dev libfontconfig-dev
-          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy
-          rustup default "$RUST_VERSION"
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crownos-installer/target
-          key: installer-${{ hashFiles('crownos-installer/Cargo.lock') }}
-      - run: cargo test --locked
-        working-directory: crownos-installer
-      - run: cargo clippy --locked --all-targets
-        working-directory: crownos-installer
-
-  notify-iso:
-    needs: test
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - env:
-          GH_TOKEN: ${{ secrets.CROWNOS_ISO_DISPATCH_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::notice::CROWNOS_ISO_DISPATCH_TOKEN is not set; crownos-iso will pick this up in its nightly build."
-            exit 0
-          fi
-          gh api repos/Crown-OS/crownos-iso/dispatches \
-            -f event_type=component-updated -f "client_payload[repository]=$GITHUB_REPOSITORY"
+  ci:
+    uses: Crown-OS/.github/.github/workflows/rust.yml@main
