@@ -2,7 +2,7 @@
 # rebuild, so the next ISO and nightly repository carry the change.
 #
 # Secrets:
-#   CROWNOS_SOURCES_TOKEN        read access to crownuikit and crownos-config, if private
+#   CROWNOS_SOURCES_TOKEN        read access to crownui, crownos-config and crownos-protocols, if private
 #   CROWNOS_ISO_DISPATCH_TOKEN   may create repository dispatches on Crown-OS/crownos-iso
 
 name: CI
@@ -30,7 +30,7 @@ jobs:
         env:
           TOKEN: ${{ secrets.CROWNOS_SOURCES_TOKEN }}
         run: |
-          for repo in crownuikit crownos-config; do
+          for repo in crownui crownos-config crownos-protocols; do
             git clone --quiet --depth 1 "https://${TOKEN:+x-access-token:$TOKEN@}github.com/Crown-OS/$repo.git" "$repo"
           done
       - name: Toolchain
