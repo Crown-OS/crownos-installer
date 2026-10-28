@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, bail};
 use serde::Deserialize;
 
 /// Where archiso mounts the medium it booted from.
@@ -223,6 +223,11 @@ pub struct Disk {
 }
 
 impl Disk {
+    /// No partition table yet. See [`DiskOp::CreateTable`](super::disks::DiskOp::CreateTable).
+    pub fn is_blank(&self) -> bool {
+        self.table.is_empty()
+    }
+
     /// Convert sectors to bytes with this disk's sector size.
     pub fn bytes(&self, sectors: u64) -> u64 {
         sectors * u64::from(self.sector_size)
@@ -401,6 +406,7 @@ pub fn probe(system: &dyn System) -> Result<SystemSnapshot> {
         // PARTUUID", which is the failure the user can act on.
         match read_table(system, &device.path, &devices) {
             Ok(disk) => disks.push(disk),
+            Err(_) if device.is_blank() => disks.extend(read_blank_disk(system, &device.path).ok()),
             Err(_) => continue,
         }
     }
@@ -419,12 +425,22 @@ struct BlockDevice {
     partlabel: Option<String>,
     fstype: Option<String>,
     label: Option<String>,
+    pttype: Option<String>,
+}
+
+impl BlockDevice {
+    /// Nothing on it at all: no partition table and no filesystem written
+    /// straight onto the device. A brand-new disk, which is the commonest
+    /// install target there is.
+    fn is_blank(&self) -> bool {
+        self.pttype.is_none() && self.fstype.is_none()
+    }
 }
 
 /// Columns to ask `lsblk` for. `--list` rather than the default tree so the JSON
 /// is a flat array: nesting buys nothing here (the parent is recovered from
 /// `PKNAME`) and costs a recursive deserializer.
-const LSBLK_COLUMNS: &str = "PATH,TYPE,PARTUUID,PARTLABEL,FSTYPE,LABEL,PKNAME";
+const LSBLK_COLUMNS: &str = "PATH,TYPE,PARTUUID,PARTLABEL,FSTYPE,LABEL,PTTYPE,PKNAME";
 
 fn read_block_devices(system: &dyn System) -> Result<BTreeMap<String, BlockDevice>> {
     #[derive(Deserialize)]
@@ -440,11 +456,19 @@ fn read_block_devices(system: &dyn System) -> Result<BTreeMap<String, BlockDevic
         partlabel: Option<String>,
         fstype: Option<String>,
         label: Option<String>,
+        pttype: Option<String>,
     }
 
     let json = system.run(
         "lsblk",
-        &["--json", "--bytes", "--list", "--paths", "--output", LSBLK_COLUMNS],
+        &[
+            "--json",
+            "--bytes",
+            "--list",
+            "--paths",
+            "--output",
+            LSBLK_COLUMNS,
+        ],
     )?;
     let output: Output = serde_json::from_str(&json).context("could not parse `lsblk --json`")?;
 
@@ -459,6 +483,7 @@ fn read_block_devices(system: &dyn System) -> Result<BTreeMap<String, BlockDevic
                 partlabel: row.partlabel.filter(|s| !s.is_empty()),
                 fstype: lower(row.fstype),
                 label: row.label.filter(|s| !s.is_empty()),
+                pttype: lower(row.pttype),
             };
             (row.path, device)
         })
@@ -539,10 +564,10 @@ fn read_table(
     // `sfdisk --json` reports sectors unless asked otherwise. If a future
     // version changes that, every offset below would be silently wrong by a
     // factor of the sector size, so it is checked rather than assumed.
-    if let Some(unit) = &table.unit {
-        if unit != "sectors" {
-            bail!("`sfdisk --json {disk_path}` reported offsets in {unit}, not sectors");
-        }
+    if let Some(unit) = &table.unit
+        && unit != "sectors"
+    {
+        bail!("`sfdisk --json {disk_path}` reported offsets in {unit}, not sectors");
     }
 
     let sector_size = match table.sectorsize {
@@ -564,9 +589,12 @@ fn read_table(
         // intend to touch.
         let scanned = match device.and_then(|d| d.fstype.clone()) {
             Some(fstype) => Some((Some(fstype), device.and_then(|d| d.label.clone()))),
-            None => blkid(system, &entry.node)
-                .ok()
-                .map(|fields| (lower(fields.get("TYPE").cloned()), fields.get("LABEL").cloned())),
+            None => blkid(system, &entry.node).ok().map(|fields| {
+                (
+                    lower(fields.get("TYPE").cloned()),
+                    fields.get("LABEL").cloned(),
+                )
+            }),
         };
         let (fstype, label) = scanned.unwrap_or((None, None));
 
@@ -604,6 +632,41 @@ fn read_table(
         partitions,
         path: disk_path.to_owned(),
     })
+}
+
+/// A disk with no partition table, described as the GPT `parted mklabel gpt`
+/// would give it, so the editor can lay partitions out before the table exists.
+///
+/// An empty device is refused: a card reader with no card in it reports zero
+/// sectors, and offering it as a target helps nobody.
+fn read_blank_disk(system: &dyn System, disk_path: &str) -> Result<Disk> {
+    let sector_size = read_logical_sector_size(system, disk_path)?;
+    let sectors = read_device_sectors(system, disk_path, sector_size)?;
+    let (first_usable_sector, last_usable_sector) = gpt_usable_range(sectors, sector_size)
+        .with_context(|| format!("{disk_path} is too small to hold a GPT"))?;
+    Ok(Disk {
+        path: disk_path.to_owned(),
+        table: String::new(),
+        disk_guid: None,
+        sector_size,
+        first_usable_sector,
+        last_usable_sector,
+        partitions: Vec::new(),
+    })
+}
+
+/// The bytes a GPT reserves for its partition entry array, at each end of the
+/// disk: 128 entries of 128 bytes.
+const GPT_ENTRY_ARRAY_BYTES: u64 = 128 * 128;
+
+/// The first and last sector a fresh GPT leaves usable: the protective MBR, the
+/// header and the entry array at the front, the backup entry array and backup
+/// header at the back.
+fn gpt_usable_range(sectors: u64, sector_size: u32) -> Option<(u64, u64)> {
+    let reserved = 1 + GPT_ENTRY_ARRAY_BYTES.div_ceil(u64::from(sector_size));
+    let first = 1 + reserved;
+    let last = sectors.checked_sub(1 + reserved)?;
+    (last > first).then_some((first, last))
 }
 
 /// The disk's logical sector size, from sysfs.
@@ -843,11 +906,17 @@ pub(crate) mod fixture {
 
     pub(crate) const LSBLK_JSON: &str = r#"{
        "blockdevices": [
-          {"path":"/dev/sda","type":"disk","partuuid":null,"partlabel":null,"fstype":null,"label":null,"pkname":null},
+          {"path":"/dev/sda","type":"disk","partuuid":null,"partlabel":null,"fstype":null,"label":null,"pttype":"gpt","pkname":null},
           {"path":"/dev/sda1","type":"part","partuuid":"0fc63daf-8483-4772-8e79-3d69d8477de4","partlabel":"EFI system partition","fstype":"vfat","label":"SYSTEM","pkname":"sda"},
           {"path":"/dev/sda2","type":"part","partuuid":"11111111-2222-3333-4444-555555555555","partlabel":"Microsoft reserved partition","fstype":null,"label":null,"pkname":"sda"},
           {"path":"/dev/sda3","type":"part","partuuid":"ebd0a0a2-b9e5-4433-87c0-68b6b72699c7","partlabel":"Basic data partition","fstype":"ntfs","label":"Windows","pkname":"sda"},
           {"path":"/dev/sda4","type":"part","partuuid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","partlabel":"CROWNSTAGE","fstype":"vfat","label":"CROWNSTAGE","pkname":"sda"}
+       ]
+    }"#;
+
+    pub(crate) const BLANK_LSBLK_JSON: &str = r#"{
+       "blockdevices": [
+          {"path":"/dev/sda","type":"disk","partuuid":null,"partlabel":null,"fstype":null,"label":null,"pttype":null,"pkname":null}
        ]
     }"#;
 
@@ -874,6 +943,24 @@ pub(crate) mod fixture {
     /// A [`FakeSystem`] wired up with the fixtures above.
     pub(crate) fn machine(findmnt: &str) -> FakeSystem {
         machine_with(findmnt, &sfdisk_json("gpt", STANDARD_TABLE))
+    }
+
+    /// A machine whose only disk is brand new: `sfdisk` finds no table on it.
+    pub(crate) fn blank_machine(findmnt: &str, lsblk: &str) -> FakeSystem {
+        FakeSystem::new()
+            .with_command(
+                &format!(
+                    "lsblk --json --bytes --list --paths --output {}",
+                    super::LSBLK_COLUMNS
+                ),
+                lsblk,
+            )
+            .with_command(
+                "findmnt --json --list --output SOURCE,TARGET,FSTYPE",
+                findmnt,
+            )
+            .with_file("/sys/block/sda/size", &format!("{DISK_SECTORS}\n"))
+            .with_file("/sys/block/sda/queue/logical_block_size", "512\n")
     }
 
     /// [`machine`] with a hand-built partition table.
@@ -915,7 +1002,9 @@ mod tests {
         // PARTUUIDs come out of `sfdisk` upper case and out of `lsblk` lower
         // case; everything downstream compares them as strings, so they are
         // normalized here or not at all.
-        let esp = disk.partition("0FC63DAF-8483-4772-8E79-3D69D8477DE4").expect("esp");
+        let esp = disk
+            .partition("0FC63DAF-8483-4772-8E79-3D69D8477DE4")
+            .expect("esp");
         assert_eq!(esp.number, 1);
         assert_eq!(esp.fstype.as_deref(), Some("vfat"));
         assert_eq!(esp.start_sector, 2048);
@@ -947,16 +1036,25 @@ mod tests {
             first_usable_sector: 34,
             last_usable_sector: 102_400,
             partitions: vec![
-                partition(1, 4096, 4096),   // 4096..=8191
-                partition(2, 20480, 4096),  // 20480..=24575
+                partition(1, 4096, 4096),  // 4096..=8191
+                partition(2, 20480, 4096), // 20480..=24575
             ],
         };
         assert_eq!(
             disk.free_gaps(),
             vec![
-                Gap { start_sector: 34, sectors: 4062 },
-                Gap { start_sector: 8192, sectors: 12288 },
-                Gap { start_sector: 24576, sectors: 77825 },
+                Gap {
+                    start_sector: 34,
+                    sectors: 4062
+                },
+                Gap {
+                    start_sector: 8192,
+                    sectors: 12288
+                },
+                Gap {
+                    start_sector: 24576,
+                    sectors: 77825
+                },
             ]
         );
     }
@@ -985,9 +1083,7 @@ mod tests {
             ..partition(4, 0, 1)
         };
         assert!(part.is_source_of("/dev/sda4"));
-        assert!(part.is_source_of(
-            "/dev/disk/by-partuuid/AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
-        ));
+        assert!(part.is_source_of("/dev/disk/by-partuuid/AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"));
         assert!(!part.is_source_of("/dev/sda3"));
         assert!(!part.is_source_of("tmpfs"));
     }
@@ -1083,5 +1179,44 @@ mod tests {
             fstype: None,
             label: None,
         }
+    }
+
+    /// A brand-new disk has no table for `sfdisk` to read. It is still the
+    /// commonest install target there is, so it is offered with the geometry
+    /// the GPT the editor writes will give it.
+    #[test]
+    fn a_blank_disk_is_offered_with_the_geometry_of_a_new_gpt() {
+        let snapshot = probe(&blank_machine(FINDMNT_JSON_IN_RAM, BLANK_LSBLK_JSON)).expect("probe");
+        let disk = &snapshot.disks[0];
+        assert!(disk.is_blank());
+        assert!(disk.partitions.is_empty());
+        assert_eq!(disk.first_usable_sector, 34);
+        assert_eq!(disk.last_usable_sector, LAST_LBA);
+    }
+
+    /// A filesystem written straight onto the device has no table either, and
+    /// is somebody's data rather than an empty disk.
+    #[test]
+    fn a_disk_formatted_without_a_table_is_not_blank() {
+        let lsblk = BLANK_LSBLK_JSON.replace(r#""fstype":null"#, r#""fstype":"ext4""#);
+        let snapshot = probe(&blank_machine(FINDMNT_JSON_IN_RAM, &lsblk)).expect("probe");
+        assert!(snapshot.disks.is_empty());
+    }
+
+    /// A card reader with no card in it is a zero-sector disk.
+    #[test]
+    fn an_empty_device_is_not_a_blank_disk() {
+        let system = blank_machine(FINDMNT_JSON_IN_RAM, BLANK_LSBLK_JSON)
+            .with_file("/sys/block/sda/size", "0\n");
+        assert!(probe(&system).expect("probe").disks.is_empty());
+    }
+
+    /// The entry array is a fixed number of bytes, so a 4Kn disk reserves fewer
+    /// sectors for it than a 512-byte one.
+    #[test]
+    fn a_new_gpt_reserves_its_entry_array_in_the_disk_own_sectors() {
+        assert_eq!(gpt_usable_range(1_000, 512), Some((34, 966)));
+        assert_eq!(gpt_usable_range(1_000, 4096), Some((6, 994)));
+        assert_eq!(gpt_usable_range(60, 512), None);
     }
 }

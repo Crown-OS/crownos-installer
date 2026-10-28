@@ -87,7 +87,8 @@
 //!    → [`OpRefusal::UnsupportedShrink`]
 //! 5. **GPT only.** The same rule `plan` has, for the same reason: an MBR
 //!    disk's four-entry limit and 2 TiB ceiling make every offset here mean
-//!    something different. → [`OpRefusal::NotGpt`]
+//!    something different. A blank disk counts, once the queue starts by
+//!    writing a GPT to it. → [`OpRefusal::NotGpt`], [`OpRefusal::NoTable`]
 //!
 //! Notably **not** refused: deleting a partition with data on it, formatting
 //! Windows, or shrinking something to a tenth of its size. The user is looking
@@ -99,7 +100,7 @@ use std::fmt;
 
 use super::exec::Cmd;
 use super::plan::{
-    align_down, align_up, bytes, ALIGNMENT_BYTES, TYPE_LINUX_ROOT_X86_64, TYPE_LINUX_SWAP,
+    ALIGNMENT_BYTES, TYPE_LINUX_ROOT_X86_64, TYPE_LINUX_SWAP, align_down, align_up, bytes,
 };
 use super::probe::{Disk, Partition, SystemSnapshot};
 
@@ -302,6 +303,9 @@ impl PartitionKind {
 /// [`plan_ops`]' job; see [`Projection`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiskOp {
+    /// Write an empty GPT onto a blank disk. Only ever queued on a disk with no
+    /// table at all, so there is nothing for it to destroy.
+    CreateTable { disk: String },
     Create {
         disk: String,
         /// The number `parted` will give it, predicted from the projection so
@@ -359,6 +363,7 @@ impl DiskOp {
     /// and "Resizing a partition" is not enough to check.
     pub fn label(&self) -> String {
         match self {
+            Self::CreateTable { disk } => format!("Writing a new GPT partition table to {disk}"),
             Self::Create {
                 path,
                 start_sector,
@@ -368,15 +373,12 @@ impl DiskOp {
                 format,
                 ..
             } => {
-                let size = bytes(
-                    (end_sector.saturating_sub(*start_sector) + 1) * u64::from(*sector_size),
-                );
+                let size =
+                    bytes((end_sector.saturating_sub(*start_sector) + 1) * u64::from(*sector_size));
                 match format {
-                    Some(fs) => format!(
-                        "Creating {path} — {size} {} as {}",
-                        kind.label(),
-                        fs.name()
-                    ),
+                    Some(fs) => {
+                        format!("Creating {path} — {size} {} as {}", kind.label(), fs.name())
+                    }
                     None => format!("Creating {path} — {size} {}", kind.label()),
                 }
             }
@@ -411,6 +413,7 @@ impl DiskOp {
     /// no `Impact::None` case to distinguish.
     pub fn device(&self) -> &str {
         match self {
+            Self::CreateTable { disk } => disk,
             Self::Create { path, .. }
             | Self::Delete { path, .. }
             | Self::Resize { path, .. }
@@ -427,7 +430,7 @@ impl DiskOp {
     /// deliberately". A `Create` never qualifies — it destroys nothing that was
     /// there.
     pub fn destroys_existing(&self) -> bool {
-        !matches!(self, Self::Create { .. })
+        !matches!(self, Self::Create { .. } | Self::CreateTable { .. })
     }
 }
 
@@ -437,6 +440,13 @@ impl DiskOp {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpRefusal {
     NotGpt {
+        disk: String,
+        table: String,
+    },
+    NoTable {
+        disk: String,
+    },
+    TableExists {
         disk: String,
         table: String,
     },
@@ -482,6 +492,15 @@ impl fmt::Display for OpRefusal {
                  because an MBR disk's four-entry limit and 2 TiB ceiling make every \
                  offset here mean something different."
             ),
+            Self::NoTable { disk } => write!(
+                f,
+                "{disk} has no partition table yet. A GPT has to be written to it first."
+            ),
+            Self::TableExists { disk, table } => write!(
+                f,
+                "{disk} already has a {table} partition table. Writing a new one would \
+                 lose every partition on it, so CrownOS only creates a table on a blank disk."
+            ),
             Self::UnknownPartition { path } => write!(
                 f,
                 "{path} is not a partition on the disk it was asked for. The disk has \
@@ -499,10 +518,9 @@ impl fmt::Display for OpRefusal {
                 "{path} is the medium this installer is running from. Editing it would \
                  end the install part way through, so it is left alone."
             ),
-            Self::Overlaps { path, with } => write!(
-                f,
-                "{path} would overlap {with}. Nothing has been changed."
-            ),
+            Self::Overlaps { path, with } => {
+                write!(f, "{path} would overlap {with}. Nothing has been changed.")
+            }
             Self::OutsideDisk {
                 path,
                 last_usable_sector,
@@ -583,14 +601,10 @@ pub fn plan_ops(
     snapshot: &SystemSnapshot,
     ops: &[DiskOp],
 ) -> Result<Projection, OpRefusal> {
-    if disk.table != "gpt" {
+    if disk.table != "gpt" && !disk.is_blank() {
         return Err(OpRefusal::NotGpt {
             disk: disk.path.clone(),
-            table: if disk.table.is_empty() {
-                "missing".to_owned()
-            } else {
-                disk.table.clone()
-            },
+            table: disk.table.clone(),
         });
     }
 
@@ -599,6 +613,25 @@ pub fn plan_ops(
     let mut warnings = Vec::new();
 
     for op in ops {
+        match op {
+            DiskOp::CreateTable { .. } if !projected.is_blank() => {
+                return Err(OpRefusal::TableExists {
+                    disk: projected.path.clone(),
+                    table: projected.table.clone(),
+                });
+            }
+            DiskOp::CreateTable { .. } => {
+                projected.table = "gpt".to_owned();
+                continue;
+            }
+            _ if projected.is_blank() => {
+                return Err(OpRefusal::NoTable {
+                    disk: projected.path.clone(),
+                });
+            }
+            _ => {}
+        }
+
         // Anything touching an existing partition is checked against the
         // *machine* — mounts are a fact about now, not about the projection —
         // before it is applied to the projected table.
@@ -701,14 +734,16 @@ pub fn plan_ops(
                 }
                 // Shrinking moves data. Growing does not, so a filesystem that
                 // cannot be shrunk offline can still be grown.
-                if new_end_sector < old_end_sector {
-                    if let Err(reason) = offline_shrinkable(fstype.as_deref()) {
-                        return Err(OpRefusal::UnsupportedShrink {
-                            path: path.clone(),
-                            fstype: fstype.clone().unwrap_or_else(|| "an unknown filesystem".to_owned()),
-                            reason,
-                        });
-                    }
+                if new_end_sector < old_end_sector
+                    && let Err(reason) = offline_shrinkable(fstype.as_deref())
+                {
+                    return Err(OpRefusal::UnsupportedShrink {
+                        path: path.clone(),
+                        fstype: fstype
+                            .clone()
+                            .unwrap_or_else(|| "an unknown filesystem".to_owned()),
+                        reason,
+                    });
                 }
                 if let Some(other) =
                     overlapping(&projected, *start_sector, *new_end_sector, Some(*number))
@@ -718,7 +753,10 @@ pub fn plan_ops(
                         with: other,
                     });
                 }
-                let Some(entry) = projected.partitions.iter_mut().find(|p| p.number == *number)
+                let Some(entry) = projected
+                    .partitions
+                    .iter_mut()
+                    .find(|p| p.number == *number)
                 else {
                     return Err(OpRefusal::UnknownPartition { path: path.clone() });
                 };
@@ -732,6 +770,8 @@ pub fn plan_ops(
             DiskOp::Format { path, .. } => {
                 destroyed.push(path.clone());
             }
+
+            DiskOp::CreateTable { .. } => {}
         }
     }
 
@@ -751,11 +791,7 @@ pub fn plan_ops(
 
 /// The two rules about touching something that is already there: it must exist,
 /// it must not be mounted, and it must not be what we are running from.
-fn guard_existing(
-    disk: &Disk,
-    snapshot: &SystemSnapshot,
-    device: &str,
-) -> Result<(), OpRefusal> {
+fn guard_existing(disk: &Disk, snapshot: &SystemSnapshot, device: &str) -> Result<(), OpRefusal> {
     let Some(partition) = disk.partitions.iter().find(|p| p.path == device) else {
         return Err(OpRefusal::UnknownPartition {
             path: device.to_owned(),
@@ -803,11 +839,7 @@ fn overlapping(disk: &Disk, start: u64, end: u64, exclude: Option<u32>) -> Optio
 /// has been taken off both ends. Shared by the UI (which offers to fill a gap)
 /// and the ISO planner (which lays a root and a swap out inside one), so the two
 /// cannot disagree about where a partition lands.
-pub fn carve(
-    disk: &Disk,
-    gap: super::probe::Gap,
-    size_bytes: u64,
-) -> Option<(u64, u64)> {
+pub fn carve(disk: &Disk, gap: super::probe::Gap, size_bytes: u64) -> Option<(u64, u64)> {
     let sector = u64::from(disk.sector_size);
     let alignment = ALIGNMENT_BYTES / sector;
     let start = align_up(gap.start_sector, alignment);
@@ -845,6 +877,15 @@ pub fn fill(disk: &Disk, gap: super::probe::Gap) -> Option<(u64, u64)> {
 /// reason.
 pub fn commands_for_op(op: &DiskOp) -> Vec<Cmd> {
     match op {
+        DiskOp::CreateTable { disk } => vec![Cmd::Run {
+            program: "parted".to_owned(),
+            args: vec![
+                "--script".to_owned(),
+                disk.clone(),
+                "mklabel".to_owned(),
+                "gpt".to_owned(),
+            ],
+        }],
         DiskOp::Create { .. } => create_commands(op),
         DiskOp::Delete { disk, number, .. } => vec![Cmd::Run {
             program: "parted".to_owned(),
@@ -911,10 +952,7 @@ fn create_commands(op: &DiskOp) -> Vec<Cmd> {
             "s".to_owned(),
             "mkpart".to_owned(),
             name.clone(),
-            format
-                .unwrap_or(Filesystem::Ext4)
-                .parted_hint()
-                .to_owned(),
+            format.unwrap_or(Filesystem::Ext4).parted_hint().to_owned(),
             format_sector(*start_sector),
             format_sector(*end_sector),
         ],
@@ -1095,7 +1133,7 @@ fn format_sector(sector: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::probe::{self, fixture, Gap};
+    use crate::engine::probe::{self, Gap, fixture};
 
     const MIB: u64 = 1024 * 1024;
     const GIB: u64 = 1024 * MIB;
@@ -1110,7 +1148,14 @@ mod tests {
     }
 
     fn create(number: u32, start: u64, end: u64) -> DiskOp {
-        create_as(number, start, end, PartitionKind::LinuxData, Filesystem::Ext4, "data")
+        create_as(
+            number,
+            start,
+            end,
+            PartitionKind::LinuxData,
+            Filesystem::Ext4,
+            "data",
+        )
     }
 
     /// `..spread` does not work on an enum variant, so the variants a test wants
@@ -1214,8 +1259,8 @@ mod tests {
     fn the_projected_table_stays_sorted_by_start_sector() {
         let (disk, snapshot) = standard();
         // In the middle of the trailing free region, i.e. after sda4.
-        let projection = plan_ops(&disk, &snapshot, &[create(5, 900_000_000, 950_000_000)])
-            .expect("create");
+        let projection =
+            plan_ops(&disk, &snapshot, &[create(5, 900_000_000, 950_000_000)]).expect("create");
         let starts: Vec<u64> = projection
             .disk
             .partitions
@@ -1486,7 +1531,9 @@ mod tests {
             .map(ToString::to_string)
             .collect();
         assert!(
-            rendered.iter().any(|line| line == "resize2fs /dev/nvme0n1p2 4000s"),
+            rendered
+                .iter()
+                .any(|line| line == "resize2fs /dev/nvme0n1p2 4000s"),
             "the size must be in resize2fs' unit, not the disk's:\n{rendered:#?}"
         );
         assert!(
@@ -1540,7 +1587,9 @@ mod tests {
             .map(ToString::to_string)
             .collect();
         assert!(
-            rendered.iter().any(|line| line == "parted --script /dev/sda set 5 esp on"),
+            rendered
+                .iter()
+                .any(|line| line == "parted --script /dev/sda set 5 esp on"),
             "{rendered:#?}"
         );
         assert!(
@@ -1604,6 +1653,64 @@ mod tests {
         assert!(
             disk.bytes(gap.sectors) - disk.bytes(end - start + 1) < 2 * ALIGNMENT_BYTES,
             "filling should waste at most alignment at each end"
+        );
+    }
+
+    fn blank() -> (Disk, SystemSnapshot) {
+        let snapshot = probe::probe(&fixture::blank_machine(
+            fixture::FINDMNT_JSON_IN_RAM,
+            fixture::BLANK_LSBLK_JSON,
+        ))
+        .expect("probe");
+        (snapshot.disks[0].clone(), snapshot)
+    }
+
+    fn create_table() -> DiskOp {
+        DiskOp::CreateTable {
+            disk: "/dev/sda".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_blank_disk_takes_partitions_once_a_table_is_queued() {
+        let (disk, snapshot) = blank();
+        let partition = create(1, 2048, 2048 + GIB / 512 - 1);
+
+        match plan_ops(&disk, &snapshot, std::slice::from_ref(&partition)) {
+            Err(OpRefusal::NoTable { .. }) => {}
+            other => panic!("expected NoTable, got {other:?}"),
+        }
+
+        let projection = plan_ops(&disk, &snapshot, &[create_table(), partition])
+            .expect("table, then partition");
+        assert_eq!(projection.disk.table, "gpt");
+        assert_eq!(projection.disk.partitions.len(), 1);
+        assert!(projection.destroyed.is_empty());
+    }
+
+    /// Writing a table over one that exists loses every partition on it, which
+    /// is not what "create a table" means.
+    #[test]
+    fn a_table_is_only_written_to_a_blank_disk() {
+        let (disk, snapshot) = standard();
+        match plan_ops(&disk, &snapshot, &[create_table()]) {
+            Err(OpRefusal::TableExists { table, .. }) => assert_eq!(table, "gpt"),
+            other => panic!("expected TableExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_new_table_is_parted_mklabel_and_destroys_nothing() {
+        let op = create_table();
+        assert!(!op.destroys_existing());
+        assert_eq!(
+            commands_for_op(&op),
+            vec![Cmd::Run {
+                program: "parted".to_owned(),
+                args: ["--script", "/dev/sda", "mklabel", "gpt"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            }]
         );
     }
 }

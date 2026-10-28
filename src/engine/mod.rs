@@ -12,8 +12,8 @@
 //!   ordered [`plan::Plan`]. It performs no I/O whatsoever, which is what makes every
 //!   safety rule in it a unit test rather than a code review. If the disk is not
 //!   in a state we are willing to touch, this is where it is refused.
-//! * [`distro`] is what changes between base distributions: how the base system
-//!   and the CrownOS desktop get onto the disk, locales, kernels.
+//! * [`base`] is the Arch Linux base under the desktop: how it and the CrownOS
+//!   desktop get onto the disk, locales, the kernel.
 //! * [`exec`] walks a plan and runs it, or — in [`exec::Mode::DryRun`] — prints
 //!   exactly what it would have run.
 //!
@@ -29,8 +29,8 @@
 //! command that consumes it takes it on stdin so it never appears in an argument
 //! vector either. See [`exec::Cmd`].
 
+pub mod base;
 pub mod disks;
-pub mod distro;
 pub mod exec;
 pub mod plan;
 pub mod probe;

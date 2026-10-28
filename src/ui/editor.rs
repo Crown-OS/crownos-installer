@@ -28,9 +28,7 @@
 //! [`Editor::problem`] is where a refusal ends up, so the page can say why a
 //! click did nothing rather than appearing to ignore it.
 
-use crate::engine::disks::{
-    carve, fill, plan_ops, DiskOp, Filesystem, PartitionKind, Projection,
-};
+use crate::engine::disks::{DiskOp, Filesystem, PartitionKind, Projection, carve, fill, plan_ops};
 use crate::engine::probe::{Disk, Gap, SystemSnapshot};
 
 /// The filesystems the editor offers, in the order they appear in the picker.
@@ -52,6 +50,15 @@ pub const KINDS: &[PartitionKind] = &[
     PartitionKind::LinuxSwap,
     PartitionKind::LinuxData,
 ];
+
+/// One of the four things the editor's buttons queue.
+#[derive(Clone, Copy, Debug)]
+pub enum PartitionAction {
+    Create,
+    Delete,
+    Resize,
+    Format,
+}
 
 /// One row of the editor's list: something that is on the disk, or a hole where
 /// nothing is.
@@ -123,6 +130,16 @@ impl Editor {
             .unwrap_or(PartitionKind::LinuxData)
     }
 
+    /// Queue `action` against the selected row.
+    pub fn apply(&mut self, action: PartitionAction, disk: &Disk, snapshot: &SystemSnapshot) {
+        match action {
+            PartitionAction::Create => self.create(disk, snapshot),
+            PartitionAction::Delete => self.delete(disk, snapshot),
+            PartitionAction::Resize => self.resize(disk, snapshot),
+            PartitionAction::Format => self.format(disk, snapshot),
+        }
+    }
+
     pub fn reset_selection(&mut self) {
         self.selected = None;
         self.problem = None;
@@ -163,11 +180,7 @@ impl Editor {
     /// Every list the editor draws comes from here rather than from the disk, so
     /// what is on screen is always the table the next operation will be checked
     /// against.
-    pub fn projection(
-        &self,
-        disk: &Disk,
-        snapshot: &SystemSnapshot,
-    ) -> Result<Projection, String> {
+    pub fn projection(&self, disk: &Disk, snapshot: &SystemSnapshot) -> Result<Projection, String> {
         plan_ops(disk, snapshot, &self.ops).map_err(|refusal| refusal.to_string())
     }
 
@@ -193,7 +206,10 @@ impl Editor {
                 end_sector: partition.end_sector(),
                 size_bytes: projected.bytes(partition.sectors),
                 fstype: partition.fstype.clone(),
-                label: partition.label.clone().or_else(|| partition.partlabel.clone()),
+                label: partition
+                    .label
+                    .clone()
+                    .or_else(|| partition.partlabel.clone()),
                 partuuid: partition.partuuid.clone(),
                 pending: !existing.contains(&partition.path.as_str()),
             })
@@ -263,22 +279,24 @@ impl Editor {
             PartitionKind::LinuxSwap => Filesystem::Swap,
             _ => self.filesystem(),
         };
-        self.try_push(
-            disk,
-            snapshot,
-            DiskOp::Create {
-                disk: disk.path.clone(),
-                number,
-                path: projection.disk.partition_path(number),
-                start_sector: start,
-                end_sector: end,
-                sector_size: disk.sector_size,
-                kind,
-                name: kind.label().to_owned(),
-                format: Some(filesystem),
-                fs_label: None,
-            },
-        );
+        let create = DiskOp::Create {
+            disk: disk.path.clone(),
+            number,
+            path: projection.disk.partition_path(number),
+            start_sector: start,
+            end_sector: end,
+            sector_size: disk.sector_size,
+            kind,
+            name: kind.label().to_owned(),
+            format: Some(filesystem),
+            fs_label: None,
+        };
+        // A blank disk gets its table in the same click as its first partition:
+        // nobody wants a GPT for its own sake.
+        let table = projection.disk.is_blank().then(|| DiskOp::CreateTable {
+            disk: disk.path.clone(),
+        });
+        self.try_extend(disk, snapshot, table.into_iter().chain([create]));
     }
 
     /// Queue the deletion of the selected partition.
@@ -398,8 +416,8 @@ impl Editor {
     /// was not checked is an operation whose refusal surfaces three pages later
     /// as "the queued changes are no longer valid" instead of next to the button
     /// that caused it.
-    fn push(&mut self, op: DiskOp) {
-        self.ops.push(op);
+    fn extend(&mut self, ops: Vec<DiskOp>) {
+        self.ops.extend(ops);
         self.problem = None;
         // The selection indexed a list that has just changed shape.
         self.selected = None;
@@ -413,11 +431,22 @@ impl Editor {
     /// while the user still remembers what they clicked — rather than surfacing
     /// as a stale-projection error on a later page.
     pub fn try_push(&mut self, disk: &Disk, snapshot: &SystemSnapshot, op: DiskOp) -> bool {
-        let mut candidate = self.ops.clone();
-        candidate.push(op.clone());
+        self.try_extend(disk, snapshot, [op])
+    }
+
+    /// [`try_push`](Self::try_push) for operations that only make sense together:
+    /// all of them are queued, or none.
+    fn try_extend(
+        &mut self,
+        disk: &Disk,
+        snapshot: &SystemSnapshot,
+        ops: impl IntoIterator<Item = DiskOp>,
+    ) -> bool {
+        let ops: Vec<DiskOp> = ops.into_iter().collect();
+        let candidate: Vec<DiskOp> = self.ops.iter().chain(&ops).cloned().collect();
         match plan_ops(disk, snapshot, &candidate) {
             Ok(_) => {
-                self.push(op);
+                self.extend(ops);
                 true
             }
             Err(refusal) => {
@@ -542,18 +571,17 @@ mod tests {
     #[test]
     fn consecutive_creates_take_different_partition_numbers() {
         let (disk, snapshot) = machine();
-        let mut editor = Editor::default();
-        editor.kind = KINDS
-            .iter()
-            .position(|k| *k == PartitionKind::LinuxData)
-            .expect("data");
+        let mut editor = Editor {
+            kind: KINDS
+                .iter()
+                .position(|k| *k == PartitionKind::LinuxData)
+                .expect("data"),
+            ..Editor::default()
+        };
 
         for _ in 0..2 {
             let rows = editor.rows(&disk, &snapshot);
-            let index = rows
-                .iter()
-                .position(Row::is_free)
-                .expect("some free space");
+            let index = rows.iter().position(Row::is_free).expect("some free space");
             editor.selected = Some(index);
             editor.size_text = "20".to_owned();
             editor.create(&disk, &snapshot);
@@ -611,7 +639,12 @@ mod tests {
     fn an_action_with_no_selection_explains_itself() {
         let (disk, snapshot) = machine();
         let mut editor = Editor::default();
-        for action in [Editor::create, Editor::delete, Editor::resize, Editor::format] {
+        for action in [
+            Editor::create,
+            Editor::delete,
+            Editor::resize,
+            Editor::format,
+        ] {
             editor.problem = None;
             action(&mut editor, &disk, &snapshot);
             assert!(editor.problem.is_some(), "an action must complain");
@@ -669,13 +702,15 @@ mod tests {
             (PartitionKind::EfiSystem, Filesystem::Fat32),
             (PartitionKind::LinuxSwap, Filesystem::Swap),
         ] {
-            let mut editor = Editor::default();
-            // Deliberately point the filesystem picker at something else.
-            editor.filesystem = FILESYSTEMS
-                .iter()
-                .position(|f| *f == Filesystem::Btrfs)
-                .expect("btrfs");
-            editor.kind = KINDS.iter().position(|k| *k == kind).expect("kind");
+            let mut editor = Editor {
+                // Deliberately point the filesystem picker at something else.
+                filesystem: FILESYSTEMS
+                    .iter()
+                    .position(|f| *f == Filesystem::Btrfs)
+                    .expect("btrfs"),
+                kind: KINDS.iter().position(|k| *k == kind).expect("kind"),
+                ..Editor::default()
+            };
             let index = editor
                 .rows(&disk, &snapshot)
                 .iter()
@@ -690,5 +725,31 @@ mod tests {
                 other => panic!("expected a create, got {other:?}"),
             }
         }
+    }
+
+    /// Nobody wants a GPT for its own sake, so a blank disk gets one in the same
+    /// click as its first partition.
+    #[test]
+    fn the_first_partition_on_a_blank_disk_brings_its_table() {
+        let snapshot = probe::probe(&fixture::blank_machine(
+            fixture::FINDMNT_JSON_IN_RAM,
+            fixture::BLANK_LSBLK_JSON,
+        ))
+        .expect("probe");
+        let disk = snapshot.disks[0].clone();
+        let mut editor = Editor::default();
+
+        assert!(matches!(
+            editor.rows(&disk, &snapshot)[..],
+            [Row::Free { .. }]
+        ));
+        editor.selected = Some(0);
+        editor.create(&disk, &snapshot);
+
+        assert!(editor.problem.is_none(), "{:?}", editor.problem);
+        assert!(matches!(
+            editor.ops[..],
+            [DiskOp::CreateTable { .. }, DiskOp::Create { number: 1, .. }]
+        ));
     }
 }
