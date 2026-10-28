@@ -1,6 +1,6 @@
 //! `crownos-installer` — the Linux half of the CrownOS dual-boot installer.
 //!
-//! Runs inside the archiso live environment that `crownos-windows-installer`
+//! Runs inside the archiso live environment that `windows-migration-assistant`
 //! staged and arranged a one-shot UEFI boot into. Reads the handoff payload,
 //! works out what to do to the disk, asks the user for the one thing the payload
 //! cannot carry (a password), and does it.
@@ -15,7 +15,7 @@
 //! The same program serves both ways a user can arrive at it, and which one it is
 //! comes down to a single question: **is there a configuration file?**
 //!
-//! * There is → this boot was arranged by `crownos-windows-installer`, and the
+//! * There is → this boot was arranged by `windows-migration-assistant`, and the
 //!   payload says what to do.
 //! * There is not → the user flashed the image and booted it, so every decision
 //!   the payload would have carried is asked here instead.
@@ -34,18 +34,23 @@
 //! in front of a machine that just rebooted out of Windows needs to be told what
 //! happened and offered a restart, not returned to a console.
 
+mod autoinstall;
 mod cmdline;
 mod engine;
+mod live;
+mod network;
 mod oobe;
 mod payload;
 mod provenance;
 mod ui;
+mod util;
 
+use std::path::Path;
 use std::process::ExitCode;
 
-use engine::exec::{commands_for, Mode, Secrets};
-use engine::plan::{plan, plan_iso, Account, IsoInput, NewIds, PlanInput};
-use engine::probe::{probe, RealSystem};
+use engine::exec::{Mode, Secrets, commands_for};
+use engine::plan::{Account, IsoInput, NewIds, PlanInput, plan, plan_iso};
+use engine::probe::{RealSystem, probe};
 
 /// What was asked for on *our* command line, as opposed to the kernel's.
 #[derive(Debug, Default)]
@@ -58,8 +63,8 @@ struct Options {
     oobe: Option<String>,
     /// Use this instead of `/proc/cmdline`.
     cmdline: Option<String>,
-    /// The base `--print-plan` plans a flashed-image install for.
-    distro: oobe::Distro,
+    /// Install with the answers in this file, without a window.
+    autoinstall: Option<String>,
     help: bool,
 }
 
@@ -70,7 +75,7 @@ Two installers in one: if a handoff file left by the CrownOS Windows installer i
 found, it drives the install; if not, this is a flashed image and the installer
 asks for everything itself. Either way the partition editor is available.
 
-Normally started by the ISO's kiosk unit with no arguments at all; everything it
+Normally opened by the ISO's live desktop with no arguments at all; everything it
 needs is on the kernel command line. The options exist for rehearsing it.
 
     --dry-run           Show the wizard, but log commands instead of running them.
@@ -79,8 +84,10 @@ needs is on the kernel command line. The options exist for rehearsing it.
     --oobe <path>       Read the handoff payload from <path>, ignoring the
                         kernel command line's idea of where it is.
     --cmdline <string>  Use <string> instead of /proc/cmdline.
-    --distro <name>     The base --print-plan installs on a flashed image:
-                        arch (default), debian, ubuntu, fedora or nixos.
+    --autoinstall <path>
+                        Install with the account, filesystem and kernel
+                        arguments in <path>, without a window, onto the target
+                        the disk page would choose. For the ISO's install test.
     --help              This.
 ";
 
@@ -100,13 +107,11 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
             "--oobe" => {
                 options.oobe = Some(args.next().ok_or("--oobe needs a path")?);
             }
-            "--distro" => {
-                let name = args.next().ok_or("--distro needs a name")?;
-                options.distro = serde_json::from_value(serde_json::Value::String(name))
-                    .map_err(|_| "--distro is one of arch, debian, ubuntu, fedora, nixos")?;
-            }
             "--cmdline" => {
                 options.cmdline = Some(args.next().ok_or("--cmdline needs a string")?);
+            }
+            "--autoinstall" => {
+                options.autoinstall = Some(args.next().ok_or("--autoinstall needs a path")?);
             }
             "--help" | "-h" => options.help = true,
             other => return Err(format!("unknown option `{other}`")),
@@ -150,10 +155,14 @@ fn main() -> ExitCode {
     let startup = start_up(&args);
 
     if options.print_plan {
-        return print_plan(startup, options.distro);
+        return print_plan(startup);
     }
 
-    match ui::run(&args, startup, mode) {
+    if let Some(path) = &options.autoinstall {
+        return auto_install(startup, Path::new(path), mode);
+    }
+
+    match ui::run(startup, mode) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("crownos-installer: the window could not be opened: {error}");
@@ -211,7 +220,25 @@ fn start_up(args: &cmdline::CmdlineArgs) -> Result<ui::Context, ui::Blocker> {
         snapshot,
         auto_install,
         ids: new_ids(&system),
+        online: util::network::has_default_route(),
     })
+}
+
+/// `--autoinstall`: the whole install with no window, reported on stdout.
+fn auto_install(startup: Result<ui::Context, ui::Blocker>, config: &Path, mode: Mode) -> ExitCode {
+    let installed = startup
+        .map_err(|blocker| anyhow::anyhow!("{}: {}", blocker.title, blocker.detail))
+        .and_then(|context| {
+            let config = autoinstall::Config::load(config)?;
+            autoinstall::run(&context, &config, mode)
+        });
+    match installed {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("crownos-installer: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// PARTUUIDs for the partitions the plan will create.
@@ -268,7 +295,7 @@ const FALLBACK_SWAP_PARTUUID: &str = "c0c0c0c0-0002-4002-8002-c0c0c0c0c0c0";
 /// at all. It never edits partitions: the queue is empty because nothing typed
 /// one, which is also what keeps this path's output free of anything
 /// destructive that the user did not ask for.
-fn print_plan(startup: Result<ui::Context, ui::Blocker>, distro: oobe::Distro) -> ExitCode {
+fn print_plan(startup: Result<ui::Context, ui::Blocker>) -> ExitCode {
     let context = match startup {
         Ok(context) => context,
         Err(blocker) => {
@@ -333,7 +360,6 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>, distro: oobe::Distro) -
                 esp,
                 region_start_sector,
                 root_filesystem: target.filesystem,
-                distro,
                 swap: target.swap,
                 locale: target.locale.clone(),
                 account,
@@ -351,8 +377,10 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>, distro: oobe::Distro) -
         }
     };
 
-    println!("base:     {}", plan.distro.label());
-    println!("disk:     {} ({} byte sectors)", plan.disk, plan.sector_size);
+    println!(
+        "disk:     {} ({} byte sectors)",
+        plan.disk, plan.sector_size
+    );
     println!(
         "root:     {} — {} at sector {}",
         plan.root.path,
@@ -367,7 +395,10 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>, distro: oobe::Distro) -
             swap.start_sector
         );
     }
-    println!("esp:      {} (shared, written at file level only)", plan.esp.path);
+    println!(
+        "esp:      {} (shared, written at file level only)",
+        plan.esp.path
+    );
     match &plan.windows {
         Some(windows) => println!("kept:     {} (never touched)", windows.path),
         None => println!("kept:     nothing on this disk is designated to preserve"),
@@ -378,10 +409,7 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>, distro: oobe::Distro) -
     }
     println!("\ndestructive targets: {:?}", plan.destructive_devices());
     println!("file-level targets:  {:?}", plan.file_level_devices());
-    println!(
-        "authorized to destroy: {:?}\n",
-        plan.authorized_destructive
-    );
+    println!("authorized to destroy: {:?}\n", plan.authorized_destructive);
 
     let secrets = Secrets {
         user_password: "<not used by --print-plan>".to_owned(),
@@ -423,14 +451,6 @@ mod tests {
             parse_options(["--print-plan"].into_iter().map(str::to_owned)).expect("parse");
         assert!(options.print_plan);
         assert!(options.dry_run);
-    }
-
-    #[test]
-    fn a_base_is_named_the_way_the_payload_names_it() {
-        let options = parse_options(["--distro", "nixos"].into_iter().map(str::to_owned))
-            .expect("parse");
-        assert_eq!(options.distro, oobe::Distro::NixOs);
-        assert!(parse_options(["--distro", "gentoo"].into_iter().map(str::to_owned)).is_err());
     }
 
     #[test]

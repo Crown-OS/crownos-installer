@@ -9,23 +9,41 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-blinc_icons = "0.5.1"
-# The kiosk UI is built out of the CrownOS widget kit, so the first thing the
-# user sees looks like the desktop it is about to install rather than like a
-# rescue tool.
-crownuikit = { path = "../crownuikit" }
-# Only for the `appearance` section the kit themes from. The installer writes no
-# config of its own — the system it configures lives under `/mnt`.
-crownos-config = { path = "../crownos-config" }
+# The kiosk UI, built from the CrownOS kit so the first thing the user sees
+# looks like the desktop it is about to install. `static` links Impeller into
+# the binary, so the live image needs no rpath to the SDK the build downloads.
+# No `mcp`: an in-process agent server has no business on a machine that is
+# one click away from repartitioning its disk.
+crownui = { path = "../crownui/crownui", default-features = false, features = [
+  "wayland",
+  "impeller",
+  "static",
+  "tokio",
+  "accessibility",
+] }
+# The Wi-Fi backend. Talks to NetworkManager over D-Bus and never leaves
+# `src/network`.
+nmrs = "3.5"
+png = "0.18"
 serde = { version = "1", features = ["derive"] }
 # `oobe.json` is JSON rather than RON. See `src/oobe.rs` for why.
 serde_json = "1"
-winit = "0.30.13"
-xilem = "0.4.0"
+# CrownUI runs `cx.spawn` futures on tokio; the workers need its channels,
+# timers, `select!` and the blocking pool the install runs on.
+tokio = { version = "1", default-features = false, features = [
+  "macros",
+  "rt",
+  "sync",
+  "time",
+] }
+
+[dev-dependencies]
+# Drives the whole window headlessly: every page built in every state.
+crowntest = { path = "../crownui/crowntest" }
+# Offscreen Impeller renders of every page, for looking at (an ignored test).
+impeller = { path = "../crownui/impeller", features = ["static"] }
+taffy-layout = { path = "../crownui/taffy-layout" }
 
 [profile.dev]
 # See https://doc.rust-lang.org/cargo/reference/profiles.html#split-debuginfo
 split-debuginfo = "unpacked"
-
-[patch.crates-io]
-vello_encoding = { path = "../vendor/vello_encoding-0.6.0" }

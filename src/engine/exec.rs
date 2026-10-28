@@ -37,8 +37,8 @@ use anyhow::{Context as _, Result};
 
 use crate::oobe::RootFilesystem;
 
-use super::distro::{nixos, Distro, BLS_ENTRY_TOKEN};
-use super::plan::{Plan, Role, Step, ESP_FALLBACK_LOADER};
+use super::base::{self, BOOT_ENTRY};
+use super::plan::{ESP_FALLBACK_LOADER, Plan, Role, Step};
 use super::probe::System;
 
 // --- MARK: Secrets ---
@@ -111,12 +111,8 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
     /// Run a program in the live environment.
-    Run {
-        program: String,
-        args: Vec<String>,
-    },
-    /// Run a program inside the target root, via `arch-chroot`. Works for every
-    /// base but NixOS, whose tools live in the Nix store rather than on `PATH`.
+    Run { program: String, args: Vec<String> },
+    /// Run a program inside the target root, via `arch-chroot`.
     Chroot {
         root: String,
         program: String,
@@ -197,9 +193,17 @@ fn write_display(
     only_if_absent: bool,
 ) -> fmt::Result {
     const INLINE_LIMIT: usize = 512;
-    let guard = if only_if_absent { " (only if absent)" } else { "" };
+    let guard = if only_if_absent {
+        " (only if absent)"
+    } else {
+        ""
+    };
     if contents.len() <= INLINE_LIMIT {
-        write!(f, "cat > {path}{guard} <<'EOF'\n{}EOF", ensure_newline(contents))
+        write!(
+            f,
+            "cat > {path}{guard} <<'EOF'\n{}EOF",
+            ensure_newline(contents)
+        )
     } else {
         write!(f, "cat > {path}{guard}  # {} bytes", contents.len())
     }
@@ -232,9 +236,7 @@ impl Cmd {
     /// Carry out the command.
     fn apply(&self, system: &dyn System) -> Result<String> {
         match self {
-            Self::Run { program, args } => {
-                system.run(program, &borrow(args))
-            }
+            Self::Run { program, args } => system.run(program, &borrow(args)),
             Self::Chroot {
                 root,
                 program,
@@ -463,10 +465,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             filesystem,
             label,
         } => match filesystem {
-            RootFilesystem::Ext4 => vec![Cmd::run(
-                "mkfs.ext4",
-                &["-F", "-L", label, device],
-            )],
+            RootFilesystem::Ext4 => vec![Cmd::run("mkfs.ext4", &["-F", "-L", label, device])],
             RootFilesystem::Btrfs => vec![Cmd::run("mkfs.btrfs", &["-f", "-L", label, device])],
         },
 
@@ -485,26 +484,12 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             // `fmask`/`dmask` because a FAT32 partition has no permissions of
             // its own and the default would make the boot loader
             // world-writable.
-            Cmd::run(
-                "mount",
-                &["-o", "fmask=0137,dmask=0027", device, at],
-            ),
+            Cmd::run("mount", &["-o", "fmask=0137,dmask=0027", device, at]),
         ],
 
-        Step::InstallBaseSystem {
-            root,
-            distro,
-            packages,
-        } => distro.backend().bootstrap(root, packages),
+        Step::InstallBaseSystem { root, packages } => vec![base::bootstrap(root, packages)],
 
-        Step::InstallDesktop { root, distro } => distro.backend().install_desktop(root),
-
-        Step::ConfigureNixos {
-            root,
-            configuration,
-        } => nixos::write_configuration(root, configuration),
-
-        Step::InstallNixos { root, .. } => nixos::install(root),
+        Step::AddRepository { root } => base::add_repository(root),
 
         Step::GenerateFstab { root } => vec![Cmd::RunAppendingTo {
             program: "genfstab".to_owned(),
@@ -527,29 +512,32 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
                 RootFilesystem::Btrfs => vec![Cmd::chroot(
                     root,
                     "btrfs",
-                    &["filesystem", "mkswapfile", "--size", &format!("{megabytes}m"), "/swapfile"],
+                    &[
+                        "filesystem",
+                        "mkswapfile",
+                        "--size",
+                        &format!("{megabytes}m"),
+                        "/swapfile",
+                    ],
                 )],
-                RootFilesystem::Ext4 => vec![
-                    Cmd::chroot(
-                        root,
-                        "mkswap",
-                        &["--size", &format!("{megabytes}M"), "--file", "/swapfile"],
-                    ),
-                ],
+                RootFilesystem::Ext4 => vec![Cmd::chroot(
+                    root,
+                    "mkswap",
+                    &["--size", &format!("{megabytes}M"), "--file", "/swapfile"],
+                )],
             };
             commands.push(Cmd::RunAppendingTo {
                 program: "printf".to_owned(),
-                args: vec!["%s\\n".to_owned(), "/swapfile none swap defaults 0 0".to_owned()],
+                args: vec![
+                    "%s\\n".to_owned(),
+                    "/swapfile none swap defaults 0 0".to_owned(),
+                ],
                 path: format!("{root}/etc/fstab"),
             });
             commands
         }
 
-        Step::ConfigureLocale {
-            root,
-            locale,
-            distro,
-        } => distro.backend().configure_locale(root, locale),
+        Step::ConfigureLocale { root, locale } => base::configure_locale(root, locale),
 
         Step::ConfigureKeymap { root, keymap } => vec![Cmd::WriteFile {
             path: format!("{root}/etc/vconsole.conf"),
@@ -560,7 +548,11 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             Cmd::chroot(
                 root,
                 "ln",
-                &["-sf", &format!("/usr/share/zoneinfo/{timezone}"), "/etc/localtime"],
+                &[
+                    "-sf",
+                    &format!("/usr/share/zoneinfo/{timezone}"),
+                    "/etc/localtime",
+                ],
             ),
             // `--utc`: the hardware clock is left in UTC, which is what Windows
             // is also configured for on any machine made this century, so the two
@@ -598,7 +590,6 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             esp_rel,
             root_partuuid,
             kernel_cmdline,
-            distro,
             ..
         } => {
             let mut commands = vec![
@@ -609,16 +600,15 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
                 ),
                 // Written only if absent: a `loader.conf` already on the ESP was
                 // put there by something else, and its `default` line decides
-                // what this machine boots. The glob matches both the fixed
-                // `crownos.conf` and `kernel-install`'s `crownos-<version>.conf`.
+                // what this machine boots.
                 Cmd::WriteFileIfAbsent {
                     path: format!("{root}{esp_rel}/loader/loader.conf"),
                     contents: format!(
-                        "default {BLS_ENTRY_TOKEN}*\ntimeout 5\nconsole-mode keep\neditor no\n"
+                        "default {BOOT_ENTRY}.conf\ntimeout 5\nconsole-mode keep\neditor no\n"
                     ),
                 },
+                base::boot_entry(root, esp_rel, kernel_cmdline),
             ];
-            commands.extend(distro.backend().boot_entry(root, esp_rel, kernel_cmdline));
             commands.extend([
                 Cmd::WriteFile {
                     path: format!("{root}/etc/kernel/cmdline"),
@@ -632,12 +622,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             commands
         }
 
-        Step::InstallKernel {
-            root,
-            esp_rel,
-            distro,
-            ..
-        } => distro.backend().install_kernel(root, esp_rel),
+        Step::InstallKernel { root, esp_rel, .. } => base::install_kernel(root, esp_rel),
 
         Step::CreateUser {
             root,
@@ -672,21 +657,10 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             ]
         }
 
-        Step::SetUserPassword {
-            root,
-            username,
-            distro,
-        } => {
-            let (program, args) = match distro {
-                Distro::NixOs => nixos::chpasswd(root),
-                _ => (
-                    "arch-chroot".to_owned(),
-                    vec![root.clone(), "chpasswd".to_owned()],
-                ),
-            };
+        Step::SetUserPassword { root, username } => {
             vec![Cmd::RunWithSecretStdin {
-                program,
-                args,
+                program: "arch-chroot".to_owned(),
+                args: vec![root.clone(), "chpasswd".to_owned()],
                 input: format!("{username}:{}\n", secrets.user_password),
                 redact: "printf '<username>:<password>'",
             }]
@@ -698,15 +672,13 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
 
         Step::EnableAutologin { root, username } => vec![
             Cmd::MakeDirs {
-                path: format!("{root}/etc/systemd/system/getty@tty1.service.d"),
+                path: format!("{root}/etc/crownos"),
             },
+            // crown-sessiond logs this user in once per boot; there is no
+            // getty in the way and no display manager.
             Cmd::WriteFile {
-                path: format!("{root}/etc/systemd/system/getty@tty1.service.d/autologin.conf"),
-                contents: format!(
-                    "[Service]\n\
-                     ExecStart=\n\
-                     ExecStart=-/sbin/agetty --autologin {username} --noclear %I $TERM\n"
-                ),
+                path: format!("{root}/etc/crownos/sessiond.conf"),
+                contents: format!("autologin = {username}\n"),
             },
         ],
 
@@ -725,10 +697,9 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             Cmd::run("umount", &["--recursive", at]),
         ],
 
-        Step::DeleteStagingPartition { disk, number, .. } => vec![Cmd::run(
-            "sfdisk",
-            &["--delete", disk, &number.to_string()],
-        )],
+        Step::DeleteStagingPartition { disk, number, .. } => {
+            vec![Cmd::run("sfdisk", &["--delete", disk, &number.to_string()])]
+        }
 
         Step::GrowRootPartition {
             disk,
@@ -799,7 +770,8 @@ mod tests {
     }
 
     fn a_plan() -> Plan {
-        let snapshot = probe::probe(&fixture::machine(fixture::FINDMNT_JSON_IN_RAM)).expect("probe");
+        let snapshot =
+            probe::probe(&fixture::machine(fixture::FINDMNT_JSON_IN_RAM)).expect("probe");
         let disk = &snapshot.disks[0];
         let gap = *disk.free_gaps().last().expect("a gap");
 
@@ -815,7 +787,6 @@ mod tests {
                 },
                 root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
-                distro: crate::oobe::Distro::Arch,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -863,17 +834,11 @@ mod tests {
     fn dry_run_log(plan: &Plan) -> String {
         let system = fixture::FakeSystem::new();
         let mut log = Vec::new();
-        execute(
-            plan,
-            &secrets(),
-            Mode::DryRun,
-            &system,
-            &mut |event| {
-                if let Event::Log(line) = event {
-                    log.push(line);
-                }
-            },
-        )
+        execute(plan, &secrets(), Mode::DryRun, &system, &mut |event| {
+            if let Event::Log(line) = event {
+                log.push(line);
+            }
+        })
         .expect("a dry run cannot fail");
         assert!(
             system.journal().is_empty(),
@@ -890,8 +855,12 @@ mod tests {
         let mut finished = 0;
         let mut done = false;
         let system = fixture::FakeSystem::new();
-        execute(&plan, &secrets(), Mode::DryRun, &system, &mut |event| {
-            match event {
+        execute(
+            &plan,
+            &secrets(),
+            Mode::DryRun,
+            &system,
+            &mut |event| match event {
                 Event::StepStarted { total, .. } => {
                     assert_eq!(total, plan.steps.len());
                     started += 1;
@@ -903,8 +872,8 @@ mod tests {
                 }
                 Event::Failed { message, .. } => panic!("dry run failed: {message}"),
                 Event::Log(_) => {}
-            }
-        })
+            },
+        )
         .expect("dry run");
 
         assert_eq!(started, plan.steps.len());
@@ -1015,10 +984,7 @@ mod tests {
         )));
         // And nothing goes near Windows' own directory.
         for command in &commands {
-            assert!(
-                !command.to_string().contains("EFI/Microsoft"),
-                "{command}"
-            );
+            assert!(!command.to_string().contains("EFI/Microsoft"), "{command}");
         }
     }
 
@@ -1038,7 +1004,10 @@ mod tests {
         let note = command.apply(&present).expect("apply");
         assert!(note.contains("left alone"), "{note}");
         assert!(
-            present.journal().iter().all(|line| !line.starts_with("write")),
+            present
+                .journal()
+                .iter()
+                .all(|line| !line.starts_with("write")),
             "nothing should have been written: {:?}",
             present.journal()
         );
@@ -1046,7 +1015,10 @@ mod tests {
         let absent = fixture::FakeSystem::new();
         command.apply(&absent).expect("apply");
         assert!(
-            absent.journal().iter().any(|line| line.starts_with("write")),
+            absent
+                .journal()
+                .iter()
+                .any(|line| line.starts_with("write")),
             "{:?}",
             absent.journal()
         );
@@ -1113,7 +1085,10 @@ mod tests {
             journal.iter().any(|l| l.contains("sfdisk --append")),
             "{journal:?}"
         );
-        assert!(journal.iter().any(|l| l.contains("partprobe")), "{journal:?}");
+        assert!(
+            journal.iter().any(|l| l.contains("partprobe")),
+            "{journal:?}"
+        );
     }
 
     #[test]
@@ -1198,7 +1173,6 @@ mod tests {
                 swap: SwapPlan::None,
                 root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
-                distro: crate::oobe::Distro::Arch,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),

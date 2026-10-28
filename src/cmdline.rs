@@ -1,6 +1,6 @@
 //! The kernel command line the Windows side injected, and what it means.
 //!
-//! `crownos-windows-installer` creates a one-shot UEFI boot entry whose load
+//! `windows-migration-assistant` creates a one-shot UEFI boot entry whose load
 //! options are an archiso command line with the CrownOS handoff parameters
 //! bolted on:
 //!
@@ -121,7 +121,7 @@ pub struct CmdlineArgs {
 }
 
 impl CmdlineArgs {
-    /// Whether this boot was arranged by `crownos-windows-installer`.
+    /// Whether this boot was arranged by `windows-migration-assistant`.
     pub fn is_staged_boot(&self) -> bool {
         self.stage.is_some()
     }
@@ -275,8 +275,7 @@ pub(crate) mod tests {
 
     /// The line the Windows side actually writes, as of schema 1. Copied from
     /// the finalized contract, whitespace and all.
-    pub(crate) const STAGED: &str =
-        "initrd=\\EFI\\ArchStage\\boot\\x86_64\\initramfs-linux.img \
+    pub(crate) const STAGED: &str = "initrd=\\EFI\\ArchStage\\boot\\x86_64\\initramfs-linux.img \
          archisobasedir=EFI/ArchStage \
          archisodevice=/dev/disk/by-partuuid/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
          copytoram=y cow_spacesize=2048M \
@@ -299,7 +298,10 @@ pub(crate) mod tests {
             args.stage_partuuid.as_deref(),
             Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         );
-        assert_eq!(args.oobe_relative.as_deref(), Some("EFI/ArchStage/oobe.json"));
+        assert_eq!(
+            args.oobe_relative.as_deref(),
+            Some("EFI/ArchStage/oobe.json")
+        );
         assert!(args.auto_install);
         assert!(args.copytoram);
         assert_eq!(args.stage, Some(1));
@@ -311,7 +313,9 @@ pub(crate) mod tests {
     /// absence has to be visible rather than inferred.
     #[test]
     fn a_line_missing_either_durable_half_has_no_fallback() {
-        assert!(!parse("crownos.stage=1 crownos.oobe=EFI/ArchStage/oobe.json").has_staging_fallback());
+        assert!(
+            !parse("crownos.stage=1 crownos.oobe=EFI/ArchStage/oobe.json").has_staging_fallback()
+        );
         assert!(!parse("crownos.stage=1 crownos.stage_partuuid=aaaa").has_staging_fallback());
     }
 
@@ -331,7 +335,9 @@ pub(crate) mod tests {
     #[test]
     fn an_absolute_crownos_oobe_is_made_relative() {
         assert_eq!(
-            parse("crownos.oobe=/EFI/ArchStage/oobe.json").oobe_relative.as_deref(),
+            parse("crownos.oobe=/EFI/ArchStage/oobe.json")
+                .oobe_relative
+                .as_deref(),
             Some("EFI/ArchStage/oobe.json")
         );
     }
@@ -386,7 +392,9 @@ pub(crate) mod tests {
     /// value typed at the prompt has to be the one that wins.
     #[test]
     fn the_last_occurrence_wins() {
-        let args = parse("auto_install=true oobe_file=/a/oobe.json auto_install=false oobe_file=/b/oobe.json");
+        let args = parse(
+            "auto_install=true oobe_file=/a/oobe.json auto_install=false oobe_file=/b/oobe.json",
+        );
         assert!(!args.auto_install);
         assert_eq!(
             args.oobe_file.as_deref(),

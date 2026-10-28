@@ -1,7 +1,7 @@
 //! The handoff payload: everything the Linux side needs to finish the install.
 //!
 //! This is the contract between two programs that never run at the same time.
-//! `crownos-windows-installer` writes one of these to the staging medium as
+//! `windows-migration-assistant` writes one of these to the staging medium as
 //! `oobe.json`; `crownos-installer`, booted from the staged live environment on
 //! the next restart, reads it and does the actual installation.
 //!
@@ -13,7 +13,7 @@
 //! # This file is duplicated on purpose
 //!
 //! An identical copy of this module lives in
-//! `crownos-windows-installer/src/oobe.rs`, and that is the copy that writes the
+//! `windows-migration-assistant/src/oobe.rs`, and that is the copy that writes the
 //! file. The alternative — a shared crate — would put a dependency edge between a
 //! Windows-only binary and a Linux-only one, and drag one platform's build graph
 //! onto the other for the sake of ~200 lines of `serde` structs. Instead both
@@ -125,23 +125,6 @@ pub struct Install {
     /// out explicitly rather than assumed so that a payload which somehow lost
     /// its meaning cannot be read as "wipe the disk" by default.
     pub keep_windows: bool,
-    /// The distribution CrownOS is layered on. Absent in payloads written before
-    /// the choice existed, which were all Arch.
-    #[serde(default)]
-    pub distro: Distro,
-}
-
-/// The base distribution under the CrownOS desktop.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Distro {
-    #[default]
-    Arch,
-    Debian,
-    Ubuntu,
-    Fedora,
-    #[serde(rename = "nixos")]
-    NixOs,
 }
 
 /// How swap is provided.
@@ -350,7 +333,7 @@ mod tests {
     fn sample() -> Oobe {
         Oobe {
             schema_version: SCHEMA_VERSION,
-            generated_by: "crownos-windows-installer 0.1.0".to_owned(),
+            generated_by: "windows-migration-assistant 0.1.0".to_owned(),
             generated_at_unix: 1_756_000_000,
             install: Install {
                 auto_install: false,
@@ -360,7 +343,6 @@ mod tests {
                 },
                 root_filesystem: RootFilesystem::Ext4,
                 keep_windows: true,
-                distro: Distro::Debian,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -401,15 +383,12 @@ mod tests {
     }
 
     #[test]
-    fn a_payload_without_a_distro_is_an_arch_install() {
+    fn a_payload_that_still_names_a_base_distribution_is_read() {
         let mut json: serde_json::Value =
             serde_json::from_str(&sample().to_json().expect("serialize")).expect("valid json");
-        json["install"]
-            .as_object_mut()
-            .expect("install is an object")
-            .remove("distro");
+        json["install"]["distro"] = "arch".into();
         let parsed: Oobe = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(parsed.install.distro, Distro::Arch);
+        assert_eq!(parsed, sample());
     }
 
     #[test]
@@ -433,11 +412,11 @@ mod tests {
     }
 
     /// The golden shape. This is the cross-repo contract: the identical test in
-    /// `crownos-windows-installer` pins this exact string, so a field renamed on
+    /// `windows-migration-assistant` pins this exact string, so a field renamed on
     /// one side without the other fails there too.
     ///
     /// If this test fails because you meant to change the schema, update the
-    /// literal here *and* in `crownos-windows-installer/src/oobe.rs`, and bump
+    /// literal here *and* in `windows-migration-assistant/src/oobe.rs`, and bump
     /// [`SCHEMA_VERSION`] if the change is not backward compatible.
     #[test]
     fn the_json_shape_is_pinned() {
@@ -450,15 +429,14 @@ mod tests {
     /// Kept as a separate const so the diff on a schema change is readable.
     const GOLDEN: &str = r#"{
       "schema_version": 1,
-      "generated_by": "crownos-windows-installer 0.1.0",
+      "generated_by": "windows-migration-assistant 0.1.0",
       "generated_at_unix": 1756000000,
       "install": {
         "auto_install": false,
         "allocated_bytes": 137438953472,
         "swap": { "kind": "file", "size_bytes": 8589934592 },
         "root_filesystem": "ext4",
-        "keep_windows": true,
-        "distro": "debian"
+        "keep_windows": true
       },
       "target": {
         "esp_partuuid": "0fc63daf-8483-4772-8e79-3d69d8477de4",

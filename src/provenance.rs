@@ -4,7 +4,7 @@
 //! There are exactly two ways a user arrives at this program, and they want
 //! almost nothing in common:
 //!
-//! * **From `crownos-windows-installer`.** Windows shrank a volume, staged an
+//! * **From `windows-migration-assistant`.** Windows shrank a volume, staged an
 //!   archiso payload, wrote `oobe.json` next to it and arranged a one-shot boot
 //!   into it. Every decision has already been made and written down; this
 //!   program's job is to check the disk still matches that description, ask for
@@ -223,7 +223,7 @@ fn attempts_of(error: &LoadError) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::cmdline;
-    use crate::payload::tests::{payload_json, FakeMedium, CMDLINE_PATH};
+    use crate::payload::tests::{CMDLINE_PATH, FakeMedium, payload_json};
 
     /// A plain live ISO: nothing of ours on the command line, no file anywhere.
     /// This used to be `LoadError::NotAStagedBoot` and a dead end.
