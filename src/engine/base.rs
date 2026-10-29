@@ -43,11 +43,13 @@ pub const SERVICES: &[&str] = &[
     "crown-sessiond.service",
 ];
 
+/// The kernel package, and the name of its image and initramfs.
+pub const KERNEL: &str = "linux-cachyos";
+
 /// Deliberately short: the set that makes the machine boot, reach the network
 /// and let a user log in. The desktop comes from [`DESKTOP_PACKAGE`].
 const BASE_PACKAGES: &[&str] = &[
     "base",
-    "linux",
     "linux-firmware",
     "mkinitcpio",
     "sudo",
@@ -69,6 +71,7 @@ pub fn packages(filesystem: RootFilesystem) -> Vec<String> {
     BASE_PACKAGES
         .iter()
         .copied()
+        .chain([KERNEL])
         .chain(btrfs)
         .chain([DESKTOP_PACKAGE])
         .map(str::to_owned)
@@ -134,8 +137,8 @@ pub fn boot_entry(root: &str, esp_rel: &str, kernel_cmdline: &str) -> Cmd {
         path: format!("{root}{esp_rel}/loader/entries/{BOOT_ENTRY}.conf"),
         contents: format!(
             "title   CrownOS\n\
-             linux   /{ESP_CROWNOS_DIR}/vmlinuz-linux\n\
-             initrd  /{ESP_CROWNOS_DIR}/initramfs-linux.img\n\
+             linux   /{ESP_CROWNOS_DIR}/vmlinuz-{KERNEL}\n\
+             initrd  /{ESP_CROWNOS_DIR}/initramfs-{KERNEL}.img\n\
              options {kernel_cmdline}\n"
         ),
     }
@@ -150,11 +153,11 @@ pub fn install_kernel(root: &str, esp_rel: &str) -> Vec<Cmd> {
             path: format!("{root}{esp_rel}/{ESP_CROWNOS_DIR}"),
         },
         Cmd::WriteFile {
-            path: format!("{root}/etc/mkinitcpio.d/linux.preset"),
+            path: format!("{root}/etc/mkinitcpio.d/{KERNEL}.preset"),
             contents: format!(
-                "ALL_kver=\"/boot/vmlinuz-linux\"\n\
+                "ALL_kver=\"/boot/vmlinuz-{KERNEL}\"\n\
                  PRESETS=('default')\n\
-                 default_image=\"{esp_rel}/{ESP_CROWNOS_DIR}/initramfs-linux.img\"\n"
+                 default_image=\"{esp_rel}/{ESP_CROWNOS_DIR}/initramfs-{KERNEL}.img\"\n"
             ),
         },
         Cmd::chroot(root, "mkinitcpio", &["-P"]),
@@ -163,8 +166,8 @@ pub fn install_kernel(root: &str, esp_rel: &str) -> Vec<Cmd> {
             "cp",
             &[
                 "--",
-                "/boot/vmlinuz-linux",
-                &format!("{esp_rel}/{ESP_CROWNOS_DIR}/vmlinuz-linux"),
+                &format!("/boot/vmlinuz-{KERNEL}"),
+                &format!("{esp_rel}/{ESP_CROWNOS_DIR}/vmlinuz-{KERNEL}"),
             ],
         ),
     ]
