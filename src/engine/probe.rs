@@ -39,7 +39,10 @@ use std::process::Command;
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde::Deserialize;
 
+use crate::util::cpuinfo::{self, Microarch};
 use crate::util::meminfo;
+
+use super::base::REPO_KEY_LIVE_PATH;
 
 /// Where archiso mounts the medium it booted from.
 ///
@@ -66,6 +69,7 @@ pub const MIN_USEFUL_GAP_BYTES: u64 = 1024 * 1024;
 pub const COPYTORAM: &str = "/run/archiso/copytoram";
 
 const MEMINFO: &str = "/proc/meminfo";
+const CPUINFO: &str = "/proc/cpuinfo";
 
 // --- MARK: System access ---
 
@@ -145,7 +149,8 @@ impl System for RealSystem {
 
 // --- MARK: Snapshot ---
 
-/// The machine as it is right now: its disks, its mount table and its RAM.
+/// The machine as it is right now: its disks, its mount table, its RAM, its
+/// CPU and what the live image ships.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SystemSnapshot {
     /// Every whole disk found, with its partition table read.
@@ -154,6 +159,12 @@ pub struct SystemSnapshot {
     pub mounts: Vec<Mount>,
     /// Installed RAM, or zero when `/proc/meminfo` could not be read.
     pub memory_bytes: u64,
+    /// Which package builds the CPU runs; generic ones when `/proc/cpuinfo`
+    /// could not be read.
+    pub microarch: Microarch,
+    /// Whether the live image ships the CrownOS repository's signing key. An
+    /// image built without one installs systems that do not use the repository.
+    pub crownos_repo_key: bool,
 }
 
 impl SystemSnapshot {
@@ -423,11 +434,17 @@ pub fn probe(system: &dyn System) -> Result<SystemSnapshot> {
         .ok()
         .and_then(|meminfo| meminfo::total_bytes(&meminfo))
         .unwrap_or_default();
+    let microarch = system
+        .read_file(CPUINFO)
+        .map(|cpuinfo| cpuinfo::microarch(&cpuinfo))
+        .unwrap_or_default();
 
     Ok(SystemSnapshot {
         disks,
         mounts,
         memory_bytes,
+        microarch,
+        crownos_repo_key: system.exists(REPO_KEY_LIVE_PATH),
     })
 }
 

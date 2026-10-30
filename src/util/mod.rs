@@ -1,5 +1,6 @@
 //! Small helpers with no installer knowledge in them.
 
+pub mod cpuinfo;
 pub mod meminfo;
 pub mod mirror;
 pub mod network;

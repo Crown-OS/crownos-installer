@@ -494,7 +494,11 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
 
         Step::InstallBaseSystem { root, packages } => vec![base::bootstrap(root, packages)],
 
-        Step::AddRepository { root } => base::add_repository(root),
+        Step::ConfigureRepositories { root, microarch } => {
+            vec![base::configure_repositories(root, *microarch)]
+        }
+
+        Step::AddCrownosRepository { root } => base::add_crownos_repository(root),
 
         Step::GenerateFstab { root } => vec![Cmd::RunAppendingTo {
             program: "genfstab".to_owned(),

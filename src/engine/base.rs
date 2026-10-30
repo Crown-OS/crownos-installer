@@ -1,15 +1,17 @@
 //! The Arch Linux base CrownOS is layered on: how it and the CrownOS desktop get
 //! onto the disk from the packages the live image bundles, how the installed
-//! system is pointed at the CrownOS repository for updates, how locales and the
-//! kernel are handled.
+//! system is pointed at the CachyOS, Arch and CrownOS repositories for updates,
+//! how locales and the kernel are handled.
 //!
 //! Every function returns commands and runs nothing, so the plan stays a value
 //! and a dry run stays a faithful rehearsal.
 
 use crate::oobe::RootFilesystem;
+use crate::util::cpuinfo::Microarch;
 
 use super::exec::Cmd;
 use super::plan::ESP_CROWNOS_DIR;
+use super::repos;
 
 /// Where CrownOS packages are published.
 pub const REPO_URL: &str = "https://repo.crownos.org";
@@ -72,6 +74,7 @@ pub fn packages(filesystem: RootFilesystem) -> Vec<String> {
         .iter()
         .copied()
         .chain([KERNEL])
+        .chain(repos::PACKAGES.iter().copied())
         .chain(btrfs)
         .chain([DESKTOP_PACKAGE])
         .map(str::to_owned)
@@ -90,8 +93,18 @@ pub fn bootstrap(root: &str, packages: &[String]) -> Cmd {
     }
 }
 
+/// Point the installed system at the CachyOS builds `microarch` runs, with
+/// Arch behind them.
+pub fn configure_repositories(root: &str, microarch: Microarch) -> Cmd {
+    Cmd::WriteFile {
+        path: format!("{root}/etc/pacman.conf"),
+        contents: repos::pacman_conf(microarch),
+    }
+}
+
 /// Trust the CrownOS repository, so the installed system updates from it.
-pub fn add_repository(root: &str) -> Vec<Cmd> {
+/// Listed last, after the CachyOS and Arch repositories.
+pub fn add_crownos_repository(root: &str) -> Vec<Cmd> {
     vec![
         Cmd::run(
             "install",
@@ -207,11 +220,11 @@ mod tests {
 
     #[test]
     fn the_installed_system_updates_from_the_crownos_repository() {
-        let log: String = add_repository("/mnt")
+        let log: String = add_crownos_repository("/mnt")
             .iter()
             .map(|command| format!("{command}\n"))
             .collect();
-        for expected in [REPO_URL, REPO_KEY_LIVE_PATH] {
+        for expected in [REPO_URL, REPO_KEY_LIVE_PATH, "/mnt/etc/pacman.conf"] {
             assert!(log.contains(expected), "{expected} missing from {log}");
         }
         assert!(!log.contains("pacman -S"), "nothing is downloaded: {log}");
@@ -225,5 +238,15 @@ mod tests {
         };
         assert_eq!(path, format!("/mnt/efi/loader/entries/{BOOT_ENTRY}.conf"));
         assert!(contents.ends_with("options root=PARTUUID=x rw\n"));
+    }
+
+    #[test]
+    fn the_installed_system_updates_from_cachyos_and_arch() {
+        let Cmd::WriteFile { path, contents } = configure_repositories("/mnt", Microarch::V3)
+        else {
+            panic!("pacman.conf is a file");
+        };
+        assert_eq!(path, "/mnt/etc/pacman.conf");
+        assert_eq!(contents, repos::pacman_conf(Microarch::V3));
     }
 }

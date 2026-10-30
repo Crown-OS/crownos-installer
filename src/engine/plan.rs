@@ -60,6 +60,7 @@
 use std::fmt;
 
 use crate::oobe::{Locale, Oobe, RootFilesystem, StagingKind, SwapPlan, UserAccount};
+use crate::util::cpuinfo::Microarch;
 
 use super::base;
 use super::probe::{Disk, Gap, Partition, SystemSnapshot};
@@ -664,8 +665,11 @@ pub enum Step {
     MountEsp { device: String, at: String },
     /// `pacstrap` the base system and the desktop from the bundled packages.
     InstallBaseSystem { root: String, packages: Vec<String> },
-    /// Point the new system at the CrownOS repository for updates.
-    AddRepository { root: String },
+    /// Point the new system at the repositories it updates from, preferring
+    /// the CachyOS builds its CPU runs.
+    ConfigureRepositories { root: String, microarch: Microarch },
+    /// Trust the CrownOS repository and list it for updates.
+    AddCrownosRepository { root: String },
     /// `genfstab` into the new system's `/etc/fstab`.
     GenerateFstab { root: String },
     /// Create a swapfile and add it to fstab.
@@ -786,7 +790,8 @@ impl Step {
             Self::MountRoot { .. } => "Mounting the new system".to_owned(),
             Self::MountEsp { .. } => "Mounting the EFI partition".to_owned(),
             Self::InstallBaseSystem { .. } => "Installing packages".to_owned(),
-            Self::AddRepository { .. } => "Adding the CrownOS repository".to_owned(),
+            Self::ConfigureRepositories { .. } => "Configuring package repositories".to_owned(),
+            Self::AddCrownosRepository { .. } => "Adding the CrownOS repository".to_owned(),
             Self::GenerateFstab { .. } => "Writing the filesystem table".to_owned(),
             Self::CreateSwapFile { .. } => "Creating the swap file".to_owned(),
             Self::ConfigureLocale { .. } => "Setting the language".to_owned(),
@@ -980,6 +985,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
         &esp_record,
         &reclaim,
         &input.account,
+        input.snapshot,
     ));
 
     let plan = Plan {
@@ -1345,6 +1351,7 @@ fn build_steps(
     esp: &ExistingPartition,
     reclaim: &Reclaim,
     account: &Account,
+    snapshot: &SystemSnapshot,
 ) -> Vec<Step> {
     let root_mount = ROOT_MOUNT.to_owned();
     let esp_mount = format!("{ROOT_MOUNT}{ESP_MOUNT_REL}");
@@ -1412,7 +1419,7 @@ fn build_steps(
         });
     }
 
-    steps.extend(system_steps(oobe, layout, esp, account));
+    steps.extend(system_steps(oobe, layout, esp, account, snapshot));
 
     steps.push(Step::Unmount { at: root_mount });
 
@@ -1452,6 +1459,7 @@ fn system_steps(
     layout: &Layout,
     esp: &ExistingPartition,
     account: &Account,
+    snapshot: &SystemSnapshot,
 ) -> Vec<Step> {
     let root = ROOT_MOUNT.to_owned();
     let mut steps = vec![
@@ -1499,7 +1507,10 @@ fn system_steps(
             root: root.clone(),
             esp_rel: ESP_MOUNT_REL.to_owned(),
         },
-        Step::AddRepository { root: root.clone() },
+        Step::ConfigureRepositories {
+            root: root.clone(),
+            microarch: snapshot.microarch,
+        },
         Step::CreateUser {
             root: root.clone(),
             username: account.username.clone(),
@@ -1520,6 +1531,9 @@ fn system_steps(
             root: root.clone(),
             username: account.username.clone(),
         });
+    }
+    if snapshot.crownos_repo_key {
+        steps.push(Step::AddCrownosRepository { root: root.clone() });
     }
     steps.push(Step::EnableServices {
         root,
@@ -1801,6 +1815,7 @@ pub fn plan_iso(input: &IsoInput<'_>) -> Result<Plan, Refusal> {
         &esp_record,
         &reclaim,
         &input.account,
+        input.snapshot,
     ));
 
     let plan = Plan {
@@ -2804,10 +2819,14 @@ mod tests {
             disk: disk.path.clone(),
             region_start_sector: region.start_sector,
             memory_bytes: 0,
+            microarch: Microarch::Generic,
+            crownos_repo_key: false,
             edits: Vec::new(),
         };
         edit(&mut target);
         snapshot.memory_bytes = target.memory_bytes;
+        snapshot.microarch = target.microarch;
+        snapshot.crownos_repo_key = target.crownos_repo_key;
         plan_iso(&IsoInput {
             snapshot: &snapshot,
             disk: target.disk,
@@ -2826,7 +2845,34 @@ mod tests {
         disk: String,
         region_start_sector: u64,
         memory_bytes: u64,
+        microarch: Microarch,
+        crownos_repo_key: bool,
         edits: Vec<crate::engine::disks::DiskOp>,
+    }
+
+    #[test]
+    fn the_repositories_follow_the_cpu() {
+        let plan = iso_plan_with(|target| target.microarch = Microarch::Znver4).expect("a plan");
+        assert!(plan.steps.iter().any(|step| matches!(
+            step,
+            Step::ConfigureRepositories {
+                microarch: Microarch::Znver4,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn the_crownos_repository_is_added_only_when_the_image_ships_its_key() {
+        let adds_it = |plan: Plan| {
+            plan.steps
+                .iter()
+                .any(|step| matches!(step, Step::AddCrownosRepository { .. }))
+        };
+        assert!(!adds_it(iso_plan_with(|_| {}).expect("a plan")));
+        assert!(adds_it(
+            iso_plan_with(|target| target.crownos_repo_key = true).expect("a plan")
+        ));
     }
 
     /// The baseline: no payload, no Windows partition designated, and a boot
