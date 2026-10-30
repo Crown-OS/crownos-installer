@@ -1,7 +1,6 @@
 //! ISO flow only: the first thing on screen, before the card. Installing is
 //! the way in. Trying CrownOS without installing hands the screen to the
-//! image's live desktop, so on an image without one that way is shown but
-//! cannot be taken.
+//! image's live desktop.
 
 use crownui::ext::{Key, NamedKey};
 use crownui::prelude::{
@@ -9,7 +8,6 @@ use crownui::prelude::{
     WHITE, hstack, rgba, svg, text, vstack,
 };
 
-use crate::live;
 use crate::ui::Wizard;
 use crate::ui::components::{Emphasis, choice_panel};
 use crate::ui::layout::nothing;
@@ -31,7 +29,6 @@ const INSTALL_MARK_GAP: f32 = 8.0;
 const RADIO_SIZE: f32 = 22.0;
 const RADIO_RING: f32 = 2.0;
 const RADIO_GAP: f32 = 16.0;
-const UNAVAILABLE_OPACITY: f32 = 0.5;
 const HOVER_SCALE: f32 = 1.01;
 const PRESSED_SCALE: f32 = 0.99;
 const ENTER_LIFT: f32 = 12.0;
@@ -109,7 +106,6 @@ fn install(wizard: Signal<Wizard>) -> impl View {
 }
 
 fn try_it_out(wizard: Signal<Wizard>) -> impl View {
-    let available = live::available();
     let radio = vstack(())
         .size(RADIO_SIZE)
         .shrink(0.0)
@@ -128,34 +124,20 @@ fn try_it_out(wizard: Signal<Wizard>) -> impl View {
     )
     .role(Role::Button)
     .label("Try it out")
-    .description(if available {
-        ""
-    } else {
-        "Not available on this installer image"
-    })
-    .disabled(!available)
-    .opacity(if available { 1.0 } else { UNAVAILABLE_OPACITY })
-    .focusable(available)
-    .cursor(if available {
-        CursorIcon::Pointer
-    } else {
-        CursorIcon::Default
-    })
-    .on_click(move |cx, _| {
-        if available {
-            wizard.update(cx, Wizard::try_live);
-        }
-    })
+    .focusable(true)
+    .cursor(CursorIcon::Pointer)
+    .on_click(move |cx, _| wizard.update(cx, Wizard::try_live))
     .on_key_down(move |cx, event| {
-        if available
-            && matches!(
-                event.key,
-                Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space)
-            )
-        {
+        if matches!(
+            event.key,
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space)
+        ) {
             wizard.update(cx, Wizard::try_live);
         }
     })
+    .hover(|style| style.scale(HOVER_SCALE))
+    .active(|style| style.scale(PRESSED_SCALE))
+    .transition(Spring::snappy())
 }
 
 #[cfg(test)]

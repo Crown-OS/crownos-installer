@@ -321,7 +321,7 @@ fn a_flashed_image_opens_on_the_intro_without_the_card() {
     let mut app = window(intro());
     assert!(showing(&mut app, "Welcome to CrownOS"));
     assert!(!app.exists(role(Role::ProgressBar).name("Installation steps")));
-    assert_eq!(disabled(&mut app, "Try it out"), !crate::live::available());
+    assert!(!disabled(&mut app, "Try it out"));
 }
 
 #[test]
