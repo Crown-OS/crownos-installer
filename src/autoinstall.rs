@@ -3,7 +3,7 @@
 //! through fw_cfg, which only a virtual machine has.
 //!
 //! The target is the one the disk page would open on — the largest free region
-//! on a GPT disk with an EFI system partition — and nothing is edited.
+//! on a GPT disk — and nothing is edited.
 
 use std::path::Path;
 
@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::engine::exec::{Event, Mode, Secrets, execute};
 use crate::engine::plan::{Account, IsoInput, Plan, Step, plan_iso};
 use crate::engine::probe::RealSystem;
-use crate::oobe::{Locale, RootFilesystem, SwapPlan};
+use crate::oobe::Locale;
 use crate::ui;
 
 /// The line a successful run ends with, which the install test waits for.
@@ -25,8 +25,6 @@ pub struct Config {
     pub username: String,
     pub password: String,
     pub hostname: String,
-    #[serde(default)]
-    pub filesystem: RootFilesystem,
     /// Appended to the installed system's kernel command line.
     #[serde(default)]
     pub kernel_args: String,
@@ -52,20 +50,13 @@ pub fn run(context: &ui::Context, config: &Config, mode: Mode) -> Result<()> {
 
 fn plan_for(context: &ui::Context, config: &Config) -> Result<Plan> {
     let target = ui::Target::best_for(&context.snapshot);
-    let (Some(disk), Some(esp), Some(region_start_sector)) =
-        (target.disk, target.esp, target.region_start_sector)
-    else {
-        return Err(anyhow!(
-            "no GPT disk has both an EFI system partition and free space"
-        ));
+    let (Some(disk), Some(region_start_sector)) = (target.disk, target.region_start_sector) else {
+        return Err(anyhow!("no GPT disk has free space"));
     };
     plan_iso(&IsoInput {
         snapshot: &context.snapshot,
         disk,
-        esp,
         region_start_sector,
-        root_filesystem: config.filesystem,
-        swap: SwapPlan::None,
         locale: Locale::default(),
         account: Account {
             username: config.username.clone(),
@@ -113,7 +104,6 @@ mod tests {
         let config: Config =
             serde_json::from_str(r#"{"username":"crown","password":"pw","hostname":"box"}"#)
                 .expect("a minimal config parses");
-        assert_eq!(config.filesystem, RootFilesystem::Ext4);
         assert!(config.kernel_args.is_empty());
     }
 

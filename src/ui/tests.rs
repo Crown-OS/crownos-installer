@@ -86,6 +86,7 @@ fn test_ids() -> NewIds {
     NewIds {
         root_partuuid: "12345678-1234-1234-1234-123456789abc".to_owned(),
         swap_partuuid: "87654321-4321-4321-4321-cba987654321".to_owned(),
+        boot_partuuid: "abcdef01-2345-4678-9abc-def012345678".to_owned(),
     }
 }
 
@@ -142,7 +143,6 @@ fn a_payload_driven_install_has_a_plan_before_the_user_does_anything() {
 fn an_iso_install_opens_with_a_usable_default_target() {
     let app = Wizard::ready(iso_context(), Mode::Commit);
     assert_eq!(app.target.disk.as_deref(), Some("/dev/sda"));
-    assert_eq!(app.target.esp.as_deref(), Some("/dev/sda1"));
     assert!(app.target.region_start_sector.is_some());
 
     let plan = app.plan().expect("a plan");
@@ -159,9 +159,9 @@ fn an_iso_install_opens_with_a_usable_default_target() {
 #[test]
 fn an_iso_refusal_does_not_block_the_wizard() {
     let mut context = iso_context();
-    context.snapshot.disks[0].partitions.clear();
-    // A disk with no partitions has no ESP, so there is nothing to boot from —
-    // and `Target::best_for` therefore refuses to guess it, leaving no target.
+    context.snapshot.disks[0].table = "dos".to_owned();
+    // An MBR disk is not a target, so `Target::best_for` refuses to guess it,
+    // leaving no target.
     let mut app = Wizard::ready(context, Mode::Commit);
     app.advance();
     assert_eq!(app.page, Page::Disk, "the user can still pick another disk");
@@ -172,14 +172,12 @@ fn an_iso_refusal_does_not_block_the_wizard() {
     assert!(app.plan().is_none());
     assert!(matches!(app.refusal(), Some(Refusal::NoTargetDisk { .. })));
 
-    // Choosing it anyway — which the disk page allows, because a GPT disk with
-    // no ESP is one partition editor away from being installable — names the
-    // actual problem.
+    // Choosing it anyway names the actual problem.
     let disk = app.context().expect("context").snapshot.disks[0].clone();
     app.target.retarget(&disk);
     app.restage_plan();
     assert!(
-        matches!(app.refusal(), Some(Refusal::NoEspOnDisk { .. })),
+        matches!(app.refusal(), Some(Refusal::NotGpt { .. })),
         "{:?}",
         app.refusal()
     );

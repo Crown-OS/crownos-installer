@@ -58,7 +58,7 @@ pub use editor::Editor;
 pub use form::Form;
 pub use page::Page;
 pub use progress::InstallProgress;
-pub use target::{Target, esp_of};
+pub use target::Target;
 pub use wizard::Wizard;
 
 /// The window a developer gets when rehearsing outside `cage`. Under `cage` it

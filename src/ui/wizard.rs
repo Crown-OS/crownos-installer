@@ -262,19 +262,13 @@ impl Wizard {
         let disk = self.target.disk.clone().ok_or(Refusal::NoTargetDisk {
             disk: String::new(),
         })?;
-        let Some(esp) = self.target.esp.clone() else {
-            return Err(Refusal::NoEspOnDisk { disk });
-        };
         let Some(region_start_sector) = self.target.region_start_sector else {
             return Err(Refusal::NoFreeRegion { disk });
         };
         plan_iso(&IsoInput {
             snapshot: &context.snapshot,
             disk,
-            esp,
             region_start_sector,
-            root_filesystem: self.target.filesystem,
-            swap: self.target.swap,
             locale: self.target.locale.clone(),
             account,
             ids: context.ids.clone(),

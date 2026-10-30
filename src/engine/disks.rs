@@ -1101,7 +1101,7 @@ fn resize_commands(op: &DiskOp) -> Vec<Cmd> {
     commands
 }
 
-fn mkfs(path: &str, filesystem: Filesystem, label: Option<&str>) -> Cmd {
+pub(super) fn mkfs(path: &str, filesystem: Filesystem, label: Option<&str>) -> Cmd {
     let (program, mut args) = filesystem.mkfs(label);
     args.push(path.to_owned());
     Cmd::Run {

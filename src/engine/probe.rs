@@ -39,6 +39,8 @@ use std::process::Command;
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde::Deserialize;
 
+use crate::util::meminfo;
+
 /// Where archiso mounts the medium it booted from.
 ///
 /// A mount at this path whose source is the staging partition means the live
@@ -62,6 +64,8 @@ pub const MIN_USEFUL_GAP_BYTES: u64 = 1024 * 1024;
 /// longer needs the staging medium. See
 /// [`SystemSnapshot::payload_is_in_ram`].
 pub const COPYTORAM: &str = "/run/archiso/copytoram";
+
+const MEMINFO: &str = "/proc/meminfo";
 
 // --- MARK: System access ---
 
@@ -141,13 +145,15 @@ impl System for RealSystem {
 
 // --- MARK: Snapshot ---
 
-/// The machine as it is right now: its disks and its mount table.
+/// The machine as it is right now: its disks, its mount table and its RAM.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SystemSnapshot {
     /// Every whole disk found, with its partition table read.
     pub disks: Vec<Disk>,
     /// The mount table, as `findmnt` reports it.
     pub mounts: Vec<Mount>,
+    /// Installed RAM, or zero when `/proc/meminfo` could not be read.
+    pub memory_bytes: u64,
 }
 
 impl SystemSnapshot {
@@ -412,7 +418,17 @@ pub fn probe(system: &dyn System) -> Result<SystemSnapshot> {
     }
     disks.sort_by(|a, b| a.path.cmp(&b.path));
 
-    Ok(SystemSnapshot { disks, mounts })
+    let memory_bytes = system
+        .read_file(MEMINFO)
+        .ok()
+        .and_then(|meminfo| meminfo::total_bytes(&meminfo))
+        .unwrap_or_default();
+
+    Ok(SystemSnapshot {
+        disks,
+        mounts,
+        memory_bytes,
+    })
 }
 
 /// What `lsblk` says about one block device, before it is matched up with the

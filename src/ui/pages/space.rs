@@ -1,21 +1,14 @@
-//! ISO flow only: where on the chosen disk CrownOS goes, and what filesystem it
-//! gets.
+//! ISO flow only: which free space on the chosen disk CrownOS goes in, and the
+//! partitions it will be split into.
 
 use crownui::kit::{ButtonVariant, Choice, choice_list, icons};
-use crownui::prelude::{Cx, Signal, Styled, View, hstack, keyed, vstack};
+use crownui::prelude::{Cx, Signal, Styled, View, keyed, vstack};
 
-use crate::engine::plan::{MIN_ROOT_BYTES, bytes};
-use crate::oobe::RootFilesystem;
+use crate::engine::plan::{BOOT_BYTES, MIN_ROOT_BYTES, Plan, bytes, filesystem_name};
 use crate::ui::Wizard;
-use crate::ui::components::{Tone, alert, note, option_tile, surface};
+use crate::ui::components::{Tone, alert, note, surface};
 use crate::ui::layout::{BLOCK_GAP, PageParts, TILE_GAP, caption, next_pill, nothing, wizard_pill};
 use crate::util::mirror::mirror;
-
-/// The filesystems a CrownOS root may be, and what to call them.
-pub const FILESYSTEMS: [(RootFilesystem, &str); 2] = [
-    (RootFilesystem::Ext4, "ext4 — the safe choice"),
-    (RootFilesystem::Btrfs, "btrfs — snapshots"),
-];
 
 /// One free region as the list shows it.
 #[derive(Clone, PartialEq)]
@@ -26,22 +19,7 @@ pub struct RegionRow {
     pub usable: bool,
 }
 
-pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
-    let filesystems: Vec<_> = FILESYSTEMS
-        .iter()
-        .map(|&(filesystem, label)| {
-            let chosen = cx.memo(move |runtime| {
-                wizard.with(runtime, |wizard| wizard.target.filesystem == filesystem)
-            });
-            option_tile(label, chosen, move |cx| {
-                wizard.update(cx, |wizard| {
-                    wizard.target.filesystem = filesystem;
-                    wizard.restage_plan();
-                });
-            })
-        })
-        .collect();
-
+pub fn build(wizard: Signal<Wizard>) -> PageParts {
     let regions = keyed(
         move |runtime| wizard.with(runtime, region_rows),
         move |cx, rows| {
@@ -67,15 +45,16 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
         },
     );
 
-    let content = vstack((
-        surface((
-            caption("Filesystem"),
-            hstack(filesystems).gap(TILE_GAP).w_full(),
-        )),
-        surface((caption("Free space"), regions)),
-        refusal,
-    ))
-    .gap(BLOCK_GAP);
+    let layout = keyed(
+        move |runtime| wizard.with(runtime, |wizard| wizard.plan().map(layout_summary)),
+        |_, summary| match summary {
+            Some(summary) => note(Tone::Info, summary).boxed(),
+            None => nothing(),
+        },
+    );
+
+    let content =
+        vstack((surface((caption("Free space"), regions)), layout, refusal)).gap(BLOCK_GAP);
 
     PageParts::new(
         "Where should CrownOS go?",
@@ -124,6 +103,26 @@ fn region_list(cx: &mut Cx, wizard: Signal<Wizard>, rows: Vec<RegionRow>) -> imp
         .gap(TILE_GAP)
 }
 
+/// The partitions the plan creates, in the order they sit on the disk.
+pub fn layout_summary(plan: &Plan) -> String {
+    let swap = plan
+        .swap_partition
+        .as_ref()
+        .map_or_else(String::new, |swap| {
+            format!("{} swap, ", bytes(swap.size_bytes()))
+        });
+    format!(
+        "CrownOS will create a {} boot partition, {swap}and a {} {} system partition.",
+        bytes(
+            plan.boot_partition
+                .as_ref()
+                .map_or(BOOT_BYTES, |boot| boot.size_bytes())
+        ),
+        bytes(plan.root.size_bytes()),
+        filesystem_name(plan.root_filesystem),
+    )
+}
+
 /// The free regions of the target disk as the queued edits will leave it.
 pub fn region_rows(wizard: &Wizard) -> Vec<RegionRow> {
     let (Some(context), Some(disk)) = (wizard.context(), wizard.target_disk()) else {
@@ -146,7 +145,7 @@ pub fn region_rows(wizard: &Wizard) -> Vec<RegionRow> {
                     gap.end_sector(),
                     disk.path
                 ),
-                usable: size >= MIN_ROOT_BYTES,
+                usable: size >= BOOT_BYTES + MIN_ROOT_BYTES,
             }
         })
         .collect()

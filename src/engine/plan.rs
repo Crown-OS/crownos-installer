@@ -97,6 +97,16 @@ pub const MIN_ROOT_BYTES: u64 = 10 * GIB;
 /// initramfs alongside Windows' bootloader, and not two.
 pub const COMFORTABLE_ESP_BYTES: u64 = 300 * MIB;
 
+/// The boot partition an ISO install creates: room for several kernels and
+/// their initramfs images.
+pub const BOOT_BYTES: u64 = GIB;
+
+/// Swap matches RAM up to this.
+pub const MAX_SWAP_BYTES: u64 = 16 * GIB;
+
+/// The root filesystem of every ISO install.
+pub const ISO_FILESYSTEM: RootFilesystem = RootFilesystem::Btrfs;
+
 /// Where the target root filesystem is mounted while we build it.
 pub const ROOT_MOUNT: &str = "/mnt";
 
@@ -112,12 +122,17 @@ pub const ESP_MOUNT_REL: &str = "/efi";
 pub const TYPE_LINUX_ROOT_X86_64: &str = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709";
 /// GPT type GUID for a Linux swap partition.
 pub const TYPE_LINUX_SWAP: &str = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f";
+pub use super::disks::TYPE_EFI_SYSTEM;
 
 /// GPT partition name given to the root partition. Shows up in Windows' Disk
 /// Management, so it says what it is.
 pub const ROOT_PARTLABEL: &str = "CrownOS";
 /// GPT partition name given to the swap partition.
 pub const SWAP_PARTLABEL: &str = "CrownOS swap";
+/// GPT partition name given to the boot partition.
+pub const BOOT_PARTLABEL: &str = "CrownOS boot";
+/// FAT volume label on the boot partition. FAT allows eleven characters.
+pub const BOOT_FSLABEL: &str = "CROWNBOOT";
 /// Filesystem label on the root partition.
 pub const ROOT_FSLABEL: &str = "crownos";
 
@@ -227,6 +242,7 @@ impl Account {
 pub struct NewIds {
     pub root_partuuid: String,
     pub swap_partuuid: String,
+    pub boot_partuuid: String,
 }
 
 /// Everything [`plan`] needs.
@@ -308,13 +324,6 @@ pub enum Refusal {
     // --- ISO installs only. See `plan_iso`. ---
     /// No disk was chosen, or the chosen one is no longer there.
     NoTargetDisk { disk: String },
-    /// The chosen disk has no EFI System Partition, and a UEFI machine cannot
-    /// boot without one.
-    NoEspOnDisk { disk: String },
-    /// The chosen ESP is not on the chosen disk. A firmware that boots from one
-    /// disk's ESP into another disk's root is a machine that stops booting the
-    /// moment either is removed.
-    EspOnAnotherDisk { esp: String, disk: String },
     /// The free region the user picked is not free any more.
     ChosenRegionNotFree { start_sector: u64 },
     /// A queued partition-editor operation was refused. Carried as a string
@@ -438,19 +447,6 @@ impl fmt::Display for Refusal {
                 "{disk} is not a disk this installer can see. It may have been removed, \
                  or its partition table may have changed since the list was drawn."
             ),
-            Self::NoEspOnDisk { disk } => write!(
-                f,
-                "{disk} has no EFI system partition. CrownOS boots through UEFI and \
-                 needs one to put its kernel and boot loader on. Use the partition \
-                 editor to make one — a few hundred megabytes of FAT32 flagged `esp` \
-                 is enough — and then come back to this step."
-            ),
-            Self::EspOnAnotherDisk { esp, disk } => write!(
-                f,
-                "{esp} is not on {disk}. CrownOS will not put a root partition on one \
-                 disk and its boot loader on another: a machine set up that way stops \
-                 booting the moment either disk is removed or reordered."
-            ),
             Self::ChosenRegionNotFree { start_sector } => write!(
                 f,
                 "The free space that was chosen (starting at sector {start_sector}) is \
@@ -524,10 +520,13 @@ pub struct Plan {
     pub disk_size_bytes: u64,
     pub root: NewPartition,
     pub swap_partition: Option<NewPartition>,
+    /// The ESP this install creates for itself, when it does not share one.
+    pub boot_partition: Option<NewPartition>,
     /// A swapfile's size, when swap is a file rather than a partition.
     pub swap_file_bytes: Option<u64>,
     pub root_filesystem: RootFilesystem,
-    /// The shared ESP. Written to at the file level; never reformatted.
+    /// The ESP the boot loader goes on: the shared one, written to at the file
+    /// level and never reformatted, or [`boot_partition`](Self::boot_partition).
     pub esp: ExistingPartition,
     /// The partition of the operating system already on this disk, which this
     /// install must not touch.
@@ -571,10 +570,11 @@ impl Plan {
     /// Total bytes this install is going to occupy.
     pub fn crownos_bytes(&self) -> u64 {
         self.root.size_bytes()
-            + self
-                .swap_partition
-                .as_ref()
-                .map_or(0, NewPartition::size_bytes)
+            + [&self.swap_partition, &self.boot_partition]
+                .into_iter()
+                .flatten()
+                .map(NewPartition::size_bytes)
+                .sum::<u64>()
     }
 
     /// The device nodes that will be created, formatted, resized or deleted.
@@ -598,6 +598,7 @@ impl Plan {
     /// The device nodes that get files written into them without being
     /// reformatted — in practice, the shared ESP and nothing else.
     pub fn file_level_devices(&self) -> Vec<&str> {
+        let destructive = self.destructive_devices();
         let mut devices: Vec<&str> = self
             .steps
             .iter()
@@ -605,6 +606,7 @@ impl Plan {
                 Impact::FileLevel(device) => Some(device),
                 _ => None,
             })
+            .filter(|device| !destructive.contains(device))
             .collect();
         devices.sort_unstable();
         devices.dedup();
@@ -654,6 +656,8 @@ pub enum Step {
     },
     /// `mkswap` the swap partition.
     MakeSwap { device: String },
+    /// `mkfs.fat` the boot partition this install created.
+    MakeEsp { device: String },
     /// Mount the root partition at [`ROOT_MOUNT`].
     MountRoot { device: String, at: String },
     /// Mount the shared ESP inside the target root.
@@ -740,6 +744,7 @@ pub enum Step {
 pub enum Role {
     Root,
     Swap,
+    Boot,
 }
 
 /// What a step does to a block device, in the only two categories that matter
@@ -769,11 +774,15 @@ impl Step {
             Self::CreatePartition {
                 role: Role::Swap, ..
             } => "Creating the swap partition".to_owned(),
+            Self::CreatePartition {
+                role: Role::Boot, ..
+            } => "Creating the boot partition".to_owned(),
             Self::SettleTable { .. } => "Re-reading the partition table".to_owned(),
             Self::MakeFilesystem { filesystem, .. } => {
                 format!("Formatting as {}", filesystem_name(*filesystem))
             }
             Self::MakeSwap { .. } => "Preparing swap".to_owned(),
+            Self::MakeEsp { .. } => "Formatting the boot partition".to_owned(),
             Self::MountRoot { .. } => "Mounting the new system".to_owned(),
             Self::MountEsp { .. } => "Mounting the EFI partition".to_owned(),
             Self::InstallBaseSystem { .. } => "Installing packages".to_owned(),
@@ -813,6 +822,7 @@ impl Step {
             Self::CreatePartition { partition, .. } => Impact::Destructive(&partition.path),
             Self::MakeFilesystem { device, .. }
             | Self::MakeSwap { device }
+            | Self::MakeEsp { device }
             | Self::GrowRootFilesystem { device, .. } => Impact::Destructive(device),
             Self::DeleteStagingPartition { device, .. }
             | Self::GrowRootPartition { device, .. } => Impact::Destructive(device),
@@ -824,7 +834,7 @@ impl Step {
     }
 }
 
-fn filesystem_name(fs: RootFilesystem) -> &'static str {
+pub fn filesystem_name(fs: RootFilesystem) -> &'static str {
     match fs {
         RootFilesystem::Ext4 => "ext4",
         RootFilesystem::Btrfs => "btrfs",
@@ -892,7 +902,12 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
     let region = choose_region(disk, oobe, staging, &mut warnings)?;
 
     // 7. Lay the new partitions out inside it.
-    let layout = lay_out(disk, oobe, region, &input.ids)?;
+    let layout = lay_out(
+        disk,
+        region,
+        LeadingSizes::for_swap(oobe.install.swap),
+        &input.ids,
+    )?;
 
     // 8. Decide what happens to the staging medium, and whether we are allowed
     //    to write to it at all.
@@ -973,6 +988,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
         disk_size_bytes: disk.bytes(disk.last_usable_sector + 1),
         root: layout.root,
         swap_partition: layout.swap,
+        boot_partition: None,
         swap_file_bytes: match oobe.install.swap {
             SwapPlan::File { size_bytes } => Some(size_bytes),
             _ => None,
@@ -1130,93 +1146,102 @@ fn choose_region(
 struct Layout {
     root: NewPartition,
     swap: Option<NewPartition>,
+    boot: Option<NewPartition>,
+}
+
+/// The sizes of the partitions placed ahead of root.
+#[derive(Clone, Copy, Debug, Default)]
+struct LeadingSizes {
+    boot_bytes: Option<u64>,
+    swap_bytes: Option<u64>,
+}
+
+impl LeadingSizes {
+    fn for_swap(swap: SwapPlan) -> Self {
+        match swap {
+            SwapPlan::Partition { size_bytes } => Self {
+                swap_bytes: Some(size_bytes),
+                ..Self::default()
+            },
+            SwapPlan::None | SwapPlan::File { .. } => Self::default(),
+        }
+    }
 }
 
 /// Place the new partitions in the free region.
 ///
-/// Swap goes *first* and root takes everything after it, so that root always
-/// ends at the region's end. That is what makes reclaiming the staging partition
-/// possible at all: growing a partition means moving its last sector, and only
-/// the last partition in the region has a last sector that anything can be
-/// grown into.
-fn lay_out(disk: &Disk, oobe: &Oobe, region: Gap, ids: &NewIds) -> Result<Layout, Refusal> {
+/// Boot and swap go *first* and root takes everything after them, so that root
+/// always ends at the region's end. That is what makes reclaiming the staging
+/// partition possible at all: growing a partition means moving its last sector,
+/// and only the last partition in the region has a last sector that anything
+/// can be grown into.
+fn lay_out(disk: &Disk, region: Gap, sizes: LeadingSizes, ids: &NewIds) -> Result<Layout, Refusal> {
     let align = (ALIGNMENT_BYTES / u64::from(disk.sector_size)).max(1);
     let start = align_up(region.start_sector, align);
     // The last usable sector, rounded *down* to an alignment boundary minus one,
     // so the partition ends exactly where an aligned run would.
     let end = align_down(region.end_sector() + 1, align).saturating_sub(1);
+    let boot_bytes = sizes.boot_bytes.unwrap_or_default();
 
     if end <= start {
         return Err(Refusal::FreeRegionTooSmall {
             available_bytes: disk.bytes(region.sectors),
-            needed_bytes: MIN_ROOT_BYTES,
+            needed_bytes: boot_bytes + MIN_ROOT_BYTES,
         });
     }
 
     let region_bytes = disk.bytes(end - start + 1);
     let min_root_sectors = MIN_ROOT_BYTES / u64::from(disk.sector_size);
+    let sectors_for =
+        |size_bytes: u64| align_up(size_bytes.div_ceil(u64::from(disk.sector_size)), align);
+    let boot_sectors = sizes.boot_bytes.map_or(0, sectors_for);
+    let swap_sectors = sizes.swap_bytes.map_or(0, sectors_for);
+    let root_start = start + boot_sectors + swap_sectors;
 
-    let (swap, root_start) = match oobe.install.swap {
-        SwapPlan::Partition { size_bytes } => {
-            let swap_sectors = align_up(size_bytes.div_ceil(u64::from(disk.sector_size)), align);
-            let swap_end = start + swap_sectors - 1;
-            if swap_end >= end || end - swap_end < min_root_sectors {
-                return Err(Refusal::SwapDoesNotFit {
-                    swap_bytes: size_bytes,
-                    region_bytes,
-                    min_root_bytes: MIN_ROOT_BYTES,
-                });
-            }
-            let number = disk.next_partition_number();
-            (
-                Some(NewPartition {
-                    number,
-                    path: disk.partition_path(number),
-                    partuuid: ids.swap_partuuid.to_ascii_lowercase(),
-                    start_sector: start,
-                    end_sector: swap_end,
-                    sector_size: disk.sector_size,
-                }),
-                swap_end + 1,
-            )
-        }
-        SwapPlan::None | SwapPlan::File { .. } => (None, start),
-    };
-
-    if end - root_start + 1 < min_root_sectors {
-        return Err(Refusal::FreeRegionTooSmall {
-            available_bytes: disk.bytes(end - root_start + 1),
-            needed_bytes: MIN_ROOT_BYTES,
+    if root_start > end || end - root_start + 1 < min_root_sectors {
+        return Err(match sizes.swap_bytes {
+            Some(swap_bytes) => Refusal::SwapDoesNotFit {
+                swap_bytes,
+                region_bytes,
+                min_root_bytes: MIN_ROOT_BYTES,
+            },
+            None => Refusal::FreeRegionTooSmall {
+                available_bytes: region_bytes,
+                needed_bytes: boot_bytes + MIN_ROOT_BYTES,
+            },
         });
     }
 
-    // Root's number comes after swap's, so the two do not collide. Both are
-    // derived from `next_partition_number`, which skips whatever is in use.
-    let root_number = match &swap {
-        Some(swap) => next_free_after(disk, swap.number),
-        None => disk.next_partition_number(),
+    let mut numbers = unused_partition_numbers(disk);
+    let mut cursor = start;
+    let mut place = |sectors: u64, partuuid: &str| {
+        let number = numbers.next().unwrap_or(u32::MAX);
+        let partition = NewPartition {
+            number,
+            path: disk.partition_path(number),
+            partuuid: partuuid.to_ascii_lowercase(),
+            start_sector: cursor,
+            end_sector: cursor + sectors - 1,
+            sector_size: disk.sector_size,
+        };
+        cursor += sectors;
+        partition
     };
 
-    Ok(Layout {
-        root: NewPartition {
-            number: root_number,
-            path: disk.partition_path(root_number),
-            partuuid: ids.root_partuuid.to_ascii_lowercase(),
-            start_sector: root_start,
-            end_sector: end,
-            sector_size: disk.sector_size,
-        },
-        swap,
-    })
+    let boot = sizes
+        .boot_bytes
+        .map(|_| place(boot_sectors, &ids.boot_partuuid));
+    let swap = sizes
+        .swap_bytes
+        .map(|_| place(swap_sectors, &ids.swap_partuuid));
+    let root = place(end - root_start + 1, &ids.root_partuuid);
+
+    Ok(Layout { root, swap, boot })
 }
 
-/// The lowest partition number greater than `taken` that the table is not
-/// already using.
-fn next_free_after(disk: &Disk, taken: u32) -> u32 {
-    let used: Vec<u32> = disk.partitions.iter().map(|p| p.number).collect();
-    (taken + 1..)
-        .find(|n| !used.contains(n))
-        .expect("u32 is not full")
+/// The partition numbers the table is not already using, lowest first.
+fn unused_partition_numbers(disk: &Disk) -> impl Iterator<Item = u32> + '_ {
+    (1..=u32::MAX).filter(|number| disk.partitions.iter().all(|p| p.number != *number))
 }
 
 /// Whether — and how — the staging partition's space goes back to the user.
@@ -1325,6 +1350,15 @@ fn build_steps(
     let esp_mount = format!("{ROOT_MOUNT}{ESP_MOUNT_REL}");
     let mut steps = Vec::new();
 
+    if let Some(boot) = &layout.boot {
+        steps.push(Step::CreatePartition {
+            disk: disk.path.clone(),
+            partition: boot.clone(),
+            type_guid: TYPE_EFI_SYSTEM.to_owned(),
+            name: BOOT_PARTLABEL.to_owned(),
+            role: Role::Boot,
+        });
+    }
     if let Some(swap) = &layout.swap {
         steps.push(Step::CreatePartition {
             disk: disk.path.clone(),
@@ -1345,6 +1379,11 @@ fn build_steps(
         disk: disk.path.clone(),
     });
 
+    if let Some(boot) = &layout.boot {
+        steps.push(Step::MakeEsp {
+            device: boot.path.clone(),
+        });
+    }
     if let Some(swap) = &layout.swap {
         steps.push(Step::MakeSwap {
             device: swap.path.clone(),
@@ -1365,10 +1404,13 @@ fn build_steps(
     });
     // Before anything is installed: a base's package scripts may run
     // `bootctl` themselves the moment the ESP is visible inside the target.
-    steps.push(Step::BackUpFallbackBootloader {
-        device: esp.path.clone(),
-        esp_at: esp_mount,
-    });
+    // A boot partition this install just formatted has nothing to back up.
+    if layout.boot.is_none() {
+        steps.push(Step::BackUpFallbackBootloader {
+            device: esp.path.clone(),
+            esp_at: esp_mount,
+        });
+    }
 
     steps.extend(system_steps(oobe, layout, esp, account));
 
@@ -1510,10 +1552,10 @@ fn verify_nothing_pre_existing_is_destroyed(plan: &Plan, disk: &Disk) -> Result<
         // The partitions this plan creates are fair game — by construction their
         // numbers were not in use, so their nodes did not exist.
         if device == plan.root.path
-            || plan
-                .swap_partition
-                .as_ref()
-                .is_some_and(|s| s.path == device)
+            || [&plan.swap_partition, &plan.boot_partition]
+                .into_iter()
+                .flatten()
+                .any(|created| created.path == device)
         {
             continue;
         }
@@ -1545,11 +1587,12 @@ fn verify_nothing_pre_existing_is_destroyed(plan: &Plan, disk: &Disk) -> Result<
     // no install queued behind it.
     //
     // An ESP the editor creates in this same plan was never here to protect.
+    let shared_esp = plan.boot_partition.is_none().then_some(&plan.esp.path);
     let protected = plan
         .windows
         .iter()
         .map(|windows| &windows.path)
-        .chain(std::iter::once(&plan.esp.path))
+        .chain(shared_esp)
         .filter(|device| disk.partitions.iter().any(|p| &p.path == *device));
     let destructive = plan.destructive_devices();
     for device in protected {
@@ -1589,16 +1632,11 @@ pub struct IsoInput<'a> {
     /// reboot to survive, and a PARTUUID would be a worse identifier anyway: a
     /// blank disk has no partitions to have a PARTUUID.
     pub disk: String,
-    /// The EFI System Partition to install the boot loader into. Must be on
-    /// `disk` — see [`Refusal::EspOnAnotherDisk`].
-    pub esp: String,
-    /// Where the root partition goes: the first sector of the unallocated region
+    /// Where the new partitions go: the first sector of the unallocated region
     /// the user picked. Matched against the projected table's own gaps, so a
     /// region that stopped being free between drawing the list and pressing the
     /// button is a refusal rather than an overwrite.
     pub region_start_sector: u64,
-    pub root_filesystem: RootFilesystem,
-    pub swap: SwapPlan,
     pub locale: Locale,
     pub account: Account,
     pub ids: NewIds,
@@ -1637,17 +1675,19 @@ pub struct IsoInput<'a> {
 ///    edits will leave it — so "delete this partition, then install into the
 ///    space it was using" is one coherent plan rather than a plan built against a
 ///    disk that no longer exists by the time it runs.
-/// 5. **There is an ESP, on this disk.** A UEFI machine has to boot from one, and
-///    it has to be the same disk as the root, or removing either disk stops the
-///    machine booting.
-/// 6. **The chosen region is still free** in that projected table.
+/// 5. **The chosen region is still free** in that projected table.
+///
+/// The layout inside that region is fixed: a [`BOOT_BYTES`] ESP of its own, swap
+/// the size of RAM up to [`MAX_SWAP_BYTES`], and an [`ISO_FILESYSTEM`] root over
+/// the rest. Its own ESP keeps it on the same disk as root and independent of
+/// whatever else is installed.
 ///
 /// The pre-existing operating system, if there is one, is *not* identified or
 /// protected here. It cannot be: on a blank disk there is nothing to protect, and
 /// on a disk with something on it the user may well be deliberately replacing it
 /// with the editor. [`Plan::windows`] is therefore `None` for an ISO install, and
-/// the guard's protection reduces to the ESP — plus the authorization list, which
-/// requires the user to have named each destroyed partition individually.
+/// the guard's protection reduces to the authorization list, which requires the
+/// user to have named each destroyed partition individually.
 pub fn plan_iso(input: &IsoInput<'_>) -> Result<Plan, Refusal> {
     input.account.validate()?;
 
@@ -1687,30 +1727,6 @@ pub fn plan_iso(input: &IsoInput<'_>) -> Result<Plan, Refusal> {
 
     let mut warnings = projection.warnings.clone();
 
-    // The ESP is looked for in the *projection*, so an ESP the user just created
-    // in the editor counts — which is the whole point of being able to create
-    // one on a blank disk.
-    let esp = projected
-        .partitions
-        .iter()
-        .find(|partition| partition.path == input.esp)
-        .ok_or_else(|| {
-            if projected
-                .partitions
-                .iter()
-                .any(|p| p.type_guid.as_deref() == Some(super::disks::TYPE_EFI_SYSTEM))
-            {
-                Refusal::EspOnAnotherDisk {
-                    esp: input.esp.clone(),
-                    disk: disk.path.clone(),
-                }
-            } else {
-                Refusal::NoEspOnDisk {
-                    disk: disk.path.clone(),
-                }
-            }
-        })?;
-
     let region = projected
         .free_gaps()
         .into_iter()
@@ -1719,41 +1735,42 @@ pub fn plan_iso(input: &IsoInput<'_>) -> Result<Plan, Refusal> {
             start_sector: input.region_start_sector,
         })?;
 
-    // `lay_out` and `build_steps` are parameterised by an `Oobe`, so the user's
-    // choices are assembled into one. Not a hack: `Oobe` is the crate's word for
-    // "the decisions an install was made from", and the only difference on this
-    // path is who made them and how recently. The fields with no meaning here
-    // are filled from the projection rather than left at defaults, so nothing
-    // downstream can read a placeholder and believe it.
-    let synthesized = synthesize_oobe(input, projected, esp);
+    let swap_bytes = Some(input.snapshot.memory_bytes.min(MAX_SWAP_BYTES)).filter(|&size| size > 0);
+    let layout = lay_out(
+        projected,
+        region,
+        LeadingSizes {
+            boot_bytes: Some(BOOT_BYTES),
+            swap_bytes,
+        },
+        &input.ids,
+    )?;
+    let boot = layout
+        .boot
+        .as_ref()
+        .expect("lay_out places a boot partition whenever it is given a size");
+    let esp_record = ExistingPartition {
+        path: boot.path.clone(),
+        partuuid: boot.partuuid.clone(),
+        size_bytes: boot.size_bytes(),
+    };
 
-    let layout = lay_out(projected, &synthesized, region, &input.ids)?;
+    // `build_steps` is parameterised by an `Oobe`, so the layout is assembled
+    // into one. `Oobe` is the crate's word for "the decisions an install was
+    // made from"; the only difference on this path is who made them.
+    let swap = swap_bytes.map_or(SwapPlan::None, |size_bytes| SwapPlan::Partition {
+        size_bytes,
+    });
+    let synthesized = synthesize_oobe(input, projected, swap, &esp_record);
 
-    if projected.bytes(esp.sectors) < COMFORTABLE_ESP_BYTES {
-        warnings.push(format!(
-            "The EFI partition is {}. CrownOS will fit one kernel on it, which is \
-             enough to boot but leaves no room for a fallback kernel.",
-            bytes(projected.bytes(esp.sectors))
-        ));
-    }
-    if projected
-        .partitions
-        .iter()
-        .any(|p| p.path != esp.path && p.fstype.is_some())
-    {
+    if projected.partitions.iter().any(|p| p.fstype.is_some()) {
         warnings.push(
-            "There are other filesystems on this disk. Nothing outside the partitions \
-             listed below is touched, but this installer does not add them to the boot \
-             menu — systemd-boot finds other operating systems by itself where it can."
+            "There are other operating systems or data on this disk. Nothing outside the \
+             partitions listed below is touched. CrownOS gets its own boot partition, so \
+             anything else here stays reachable from the firmware's boot menu."
                 .to_owned(),
         );
     }
-
-    let esp_record = ExistingPartition {
-        path: esp.path.clone(),
-        partuuid: esp.partuuid.clone().unwrap_or_default(),
-        size_bytes: projected.bytes(esp.sectors),
-    };
 
     // The editor's operations go first: the rest of the plan was laid out
     // against the table they produce, so running them in any other order would
@@ -1792,11 +1809,9 @@ pub fn plan_iso(input: &IsoInput<'_>) -> Result<Plan, Refusal> {
         disk_size_bytes: projected.bytes(projected.last_usable_sector + 1),
         root: layout.root,
         swap_partition: layout.swap,
-        swap_file_bytes: match input.swap {
-            SwapPlan::File { size_bytes } => Some(size_bytes),
-            _ => None,
-        },
-        root_filesystem: input.root_filesystem,
+        boot_partition: layout.boot,
+        swap_file_bytes: None,
+        root_filesystem: ISO_FILESYSTEM,
         esp: esp_record,
         // Nothing on this path is designated as an operating system to preserve.
         // See this function's docs.
@@ -1819,16 +1834,20 @@ pub fn plan_iso(input: &IsoInput<'_>) -> Result<Plan, Refusal> {
     Ok(plan)
 }
 
-/// The user's choices, as the [`Oobe`] the shared planning helpers read.
+/// The ISO install's decisions, as the [`Oobe`] the shared planning helpers read.
 ///
-/// Every field that has a meaning on this path carries the user's answer. The
-/// three that describe the *other* side of a handoff — `target`'s expected free
-/// region, and `staging` — are filled from the projection so that they describe
-/// this disk truthfully rather than describing nothing. Nothing downstream of
-/// here reads them (`lay_out` reads `install.swap`; `build_steps` reads
-/// `install.root_filesystem`, `install.swap` and `locale`), and filling them with
-/// zeroes would be a value that looks like an answer.
-fn synthesize_oobe(input: &IsoInput<'_>, projected: &Disk, esp: &Partition) -> Oobe {
+/// The fields that describe the *other* side of a handoff — `target`'s expected
+/// free region, and `staging` — are filled from the projection so that they
+/// describe this disk truthfully rather than describing nothing. Nothing
+/// downstream of here reads them (`build_steps` reads `install.root_filesystem`,
+/// `install.swap` and `locale`), and filling them with zeroes would be a value
+/// that looks like an answer.
+fn synthesize_oobe(
+    input: &IsoInput<'_>,
+    projected: &Disk,
+    swap: SwapPlan,
+    esp: &ExistingPartition,
+) -> Oobe {
     Oobe {
         schema_version: crate::oobe::SCHEMA_VERSION,
         generated_by: format!(
@@ -1841,16 +1860,16 @@ fn synthesize_oobe(input: &IsoInput<'_>, projected: &Disk, esp: &Partition) -> O
             // asked these questions", and on this path nobody has.
             auto_install: false,
             allocated_bytes: 0,
-            swap: input.swap,
-            root_filesystem: input.root_filesystem,
+            swap,
+            root_filesystem: ISO_FILESYSTEM,
             // Not consulted — `plan_iso` never calls the check that reads it —
             // but true is the honest value: an ISO install preserves everything
             // the user did not explicitly delete in the editor.
             keep_windows: true,
         },
         target: crate::oobe::Target {
-            esp_partuuid: esp.partuuid.clone().unwrap_or_default(),
-            esp_size_bytes: projected.bytes(esp.sectors),
+            esp_partuuid: esp.partuuid.clone(),
+            esp_size_bytes: esp.size_bytes,
             windows_partuuid: String::new(),
             disk_guid: projected.disk_guid.clone(),
             windows_disk_number: 0,
@@ -1977,6 +1996,7 @@ mod tests {
         NewIds {
             root_partuuid: "12345678-1234-1234-1234-123456789abc".to_owned(),
             swap_partuuid: "87654321-4321-4321-4321-cba987654321".to_owned(),
+            boot_partuuid: "abcdef01-2345-4678-9abc-def012345678".to_owned(),
         }
     }
 
@@ -2773,7 +2793,7 @@ mod tests {
     /// The whole ISO input, built against the standard fixture machine, with
     /// `edit` applied. Mirrors `plan_with` for the payload path.
     fn iso_plan_with(edit: impl FnOnce(&mut IsoTarget)) -> Result<Plan, Refusal> {
-        let snapshot = snapshot(fixture::FINDMNT_JSON_IN_RAM);
+        let mut snapshot = snapshot(fixture::FINDMNT_JSON_IN_RAM);
         let disk = &snapshot.disks[0];
         let region = disk
             .free_gaps()
@@ -2782,20 +2802,16 @@ mod tests {
             .expect("a gap");
         let mut target = IsoTarget {
             disk: disk.path.clone(),
-            esp: "/dev/sda1".to_owned(),
             region_start_sector: region.start_sector,
-            filesystem: RootFilesystem::Ext4,
-            swap: SwapPlan::None,
+            memory_bytes: 0,
             edits: Vec::new(),
         };
         edit(&mut target);
+        snapshot.memory_bytes = target.memory_bytes;
         plan_iso(&IsoInput {
             snapshot: &snapshot,
             disk: target.disk,
-            esp: target.esp,
             region_start_sector: target.region_start_sector,
-            root_filesystem: target.filesystem,
-            swap: target.swap,
             locale: Locale::default(),
             account: account(),
             ids: ids(),
@@ -2803,26 +2819,29 @@ mod tests {
         })
     }
 
-    /// The knobs an ISO-flow test wants to turn. A struct rather than eight
-    /// arguments, because a call site passing `"/dev/sda1", 802129920, ...` says
+    /// The knobs an ISO-flow test wants to turn. A struct rather than several
+    /// arguments, because a call site passing `"/dev/sda", 802129920, ...` says
     /// nothing about which one it is varying.
     struct IsoTarget {
         disk: String,
-        esp: String,
         region_start_sector: u64,
-        filesystem: RootFilesystem,
-        swap: SwapPlan,
+        memory_bytes: u64,
         edits: Vec<crate::engine::disks::DiskOp>,
     }
 
-    /// The baseline: no payload, no Windows partition designated, and a complete
-    /// install laid out in the free space the user picked.
+    /// The baseline: no payload, no Windows partition designated, and a boot
+    /// partition followed by a btrfs root laid out in the free space the user
+    /// picked.
     #[test]
-    fn an_iso_install_lays_out_a_root_in_the_chosen_region() {
+    fn an_iso_install_lays_out_boot_then_root_in_the_chosen_region() {
         let plan = iso_plan_with(|_| {}).expect("a plan");
+        let boot = plan.boot_partition.as_ref().expect("a boot partition");
         assert_eq!(plan.disk, "/dev/sda");
-        assert_eq!(plan.esp.path, "/dev/sda1");
-        assert_eq!(plan.root.start_sector, 802_129_920);
+        assert_eq!(boot.start_sector, 802_129_920);
+        assert_eq!(boot.size_bytes(), BOOT_BYTES);
+        assert_eq!(plan.esp.path, boot.path);
+        assert_eq!(plan.root.start_sector, boot.end_sector + 1);
+        assert_eq!(plan.root_filesystem, RootFilesystem::Btrfs);
         assert!(plan.root.size_bytes() > 90 * GIB);
         assert!(
             plan.steps
@@ -2830,6 +2849,34 @@ mod tests {
                 .any(|step| matches!(step, Step::InstallBaseSystem { .. })),
             "an ISO plan installs the same base system as a payload-driven one"
         );
+    }
+
+    #[test]
+    fn swap_matches_ram_and_sits_between_boot_and_root() {
+        let plan = iso_plan_with(|target| target.memory_bytes = 8 * GIB).expect("a plan");
+        let boot = plan.boot_partition.as_ref().expect("a boot partition");
+        let swap = plan.swap_partition.as_ref().expect("a swap partition");
+        assert_eq!(swap.size_bytes(), 8 * GIB);
+        assert_eq!(swap.start_sector, boot.end_sector + 1);
+        assert_eq!(plan.root.start_sector, swap.end_sector + 1);
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| matches!(s, Step::MakeSwap { device } if device == &swap.path))
+        );
+    }
+
+    #[test]
+    fn swap_is_capped_at_sixteen_gibibytes() {
+        let plan = iso_plan_with(|target| target.memory_bytes = 64 * GIB).expect("a plan");
+        let swap = plan.swap_partition.as_ref().expect("a swap partition");
+        assert_eq!(swap.size_bytes(), MAX_SWAP_BYTES);
+    }
+
+    #[test]
+    fn unknown_ram_means_no_swap() {
+        let plan = iso_plan_with(|_| {}).expect("a plan");
+        assert_eq!(plan.swap_partition, None);
     }
 
     /// An ISO install designates nothing to preserve, and that has to be the
@@ -2841,11 +2888,9 @@ mod tests {
         assert_eq!(plan.windows_bytes, 0);
     }
 
-    /// A UEFI machine boots from an ESP, so an install onto a disk without one
-    /// is refused — with the message that says how to make one.
+    /// The install brings its own ESP, so a disk without one is a target.
     #[test]
-    fn a_disk_with_no_esp_is_refused() {
-        // A table with the ESP taken out of it.
+    fn a_disk_with_no_esp_is_installable() {
         let table: Vec<fixture::Part> = fixture::STANDARD_TABLE[1..].to_vec();
         let snapshot = snapshot_with(
             fixture::FINDMNT_JSON_IN_RAM,
@@ -2857,36 +2902,17 @@ mod tests {
             .into_iter()
             .max_by_key(|gap| gap.sectors)
             .expect("a gap");
-        let refusal = plan_iso(&IsoInput {
+        let plan = plan_iso(&IsoInput {
             snapshot: &snapshot,
             disk: disk.path.clone(),
-            esp: "/dev/sda1".to_owned(),
             region_start_sector: region.start_sector,
-            root_filesystem: RootFilesystem::Ext4,
-            swap: SwapPlan::None,
             locale: Locale::default(),
             account: account(),
             ids: ids(),
             edits: Vec::new(),
         })
-        .expect_err("no ESP, no install");
-        assert!(
-            matches!(refusal, Refusal::NoEspOnDisk { .. }),
-            "{refusal:?}"
-        );
-        assert!(refusal.to_string().contains("partition editor"));
-    }
-
-    /// Root on one disk and the boot loader on another is a machine that stops
-    /// booting the moment either is unplugged.
-    #[test]
-    fn an_esp_on_another_disk_is_refused() {
-        let refusal = iso_plan_with(|target| target.esp = "/dev/sdz1".to_owned())
-            .expect_err("the ESP must be on the target disk");
-        assert!(
-            matches!(refusal, Refusal::EspOnAnotherDisk { .. }),
-            "{refusal:?}"
-        );
+        .expect("no ESP needed");
+        assert!(plan.boot_partition.is_some());
     }
 
     /// The region is identified by where it starts, and a start that is not the
@@ -2912,10 +2938,7 @@ mod tests {
         let refusal = plan_iso(&IsoInput {
             snapshot: &snapshot,
             disk: "/dev/sda".to_owned(),
-            esp: "/dev/sda1".to_owned(),
             region_start_sector: 802_129_920,
-            root_filesystem: RootFilesystem::Ext4,
-            swap: SwapPlan::None,
             locale: Locale::default(),
             account: account(),
             ids: ids(),
@@ -2925,26 +2948,31 @@ mod tests {
         assert!(matches!(refusal, Refusal::NotGpt { .. }), "{refusal:?}");
     }
 
-    /// A brand-new disk: the editor's queue writes the table and the ESP, and
-    /// the root goes into everything after it. Nothing was there, so nothing is
-    /// authorized to be destroyed.
+    /// A brand-new disk: the editor's queue writes the table, and the install
+    /// lays out its partitions in everything after it. Nothing was there, so
+    /// nothing is authorized to be destroyed.
     #[test]
     fn an_iso_install_onto_a_blank_disk_starts_by_writing_its_table() {
-        use crate::engine::disks::{DiskOp, Filesystem, PartitionKind};
+        use crate::engine::disks::DiskOp;
 
         let snapshot = probe::probe(&fixture::blank_machine(
             fixture::FINDMNT_JSON_IN_RAM,
             fixture::BLANK_LSBLK_JSON,
         ))
         .expect("probe");
-        let esp_end = 2048 + GIB / 512 - 1;
+        let create_table = vec![DiskOp::CreateTable {
+            disk: "/dev/sda".to_owned(),
+        }];
+        let region_start_sector =
+            crate::engine::disks::plan_ops(&snapshot.disks[0], &snapshot, &create_table)
+                .expect("a table can be written")
+                .disk
+                .free_gaps()[0]
+                .start_sector;
         let input = |edits: Vec<DiskOp>| IsoInput {
             snapshot: &snapshot,
             disk: "/dev/sda".to_owned(),
-            esp: "/dev/sda1".to_owned(),
-            region_start_sector: esp_end + 1,
-            root_filesystem: RootFilesystem::Ext4,
-            swap: SwapPlan::None,
+            region_start_sector,
             locale: Locale::default(),
             account: account(),
             ids: ids(),
@@ -2954,24 +2982,7 @@ mod tests {
         let refusal = plan_iso(&input(Vec::new())).expect_err("no table, no install");
         assert!(matches!(refusal, Refusal::NotGpt { .. }), "{refusal:?}");
 
-        let plan = plan_iso(&input(vec![
-            DiskOp::CreateTable {
-                disk: "/dev/sda".to_owned(),
-            },
-            DiskOp::Create {
-                disk: "/dev/sda".to_owned(),
-                number: 1,
-                path: "/dev/sda1".to_owned(),
-                start_sector: 2048,
-                end_sector: esp_end,
-                sector_size: 512,
-                kind: PartitionKind::EfiSystem,
-                name: PartitionKind::EfiSystem.label().to_owned(),
-                format: Some(Filesystem::Fat32),
-                fs_label: None,
-            },
-        ]))
-        .expect("table, ESP, root");
+        let plan = plan_iso(&input(create_table)).expect("table, boot, root");
 
         assert!(
             matches!(
@@ -2982,6 +2993,7 @@ mod tests {
             plan.steps.first().map(Step::label)
         );
         assert!(plan.authorized_destructive.is_empty());
+        assert_eq!(plan.esp.path, "/dev/sda1");
         assert_eq!(plan.root.path, "/dev/sda2");
     }
 
@@ -2993,10 +3005,7 @@ mod tests {
         let refusal = plan_iso(&IsoInput {
             snapshot: &snapshot,
             disk: "/dev/sda".to_owned(),
-            esp: "/dev/sda1".to_owned(),
             region_start_sector: 802_129_920,
-            root_filesystem: RootFilesystem::Ext4,
-            swap: SwapPlan::None,
             locale: Locale::default(),
             account: Account {
                 username: "Root Beer".to_owned(),
@@ -3031,17 +3040,23 @@ mod tests {
     #[test]
     fn the_base_touches_only_its_own_partitions_and_never_logs_the_password() {
         let plan = iso_plan_with(|_| {}).expect("a plan");
-        assert_eq!(plan.file_level_devices(), vec!["/dev/sda1"]);
+        assert!(plan.file_level_devices().is_empty());
+        assert_eq!(plan.destructive_devices(), vec!["/dev/sda5", "/dev/sda6"]);
         assert!(!commands(&plan).contains("hunter2"));
     }
 
     #[test]
-    fn the_fallback_loader_is_backed_up_before_the_base_is_installed() {
+    fn the_new_boot_partition_is_formatted_before_it_is_mounted() {
         let plan = iso_plan_with(|_| {}).expect("a plan");
         let position = |wanted: fn(&Step) -> bool| plan.steps.iter().position(wanted);
-        let backup = position(|s| matches!(s, Step::BackUpFallbackBootloader { .. }));
-        let install = position(|s| matches!(s, Step::InstallBaseSystem { .. }));
-        assert!(backup.is_some() && backup < install);
+        let format = position(|s| matches!(s, Step::MakeEsp { .. }));
+        let mount = position(|s| matches!(s, Step::MountEsp { .. }));
+        assert!(format.is_some() && format < mount);
+        assert_eq!(
+            position(|s| matches!(s, Step::BackUpFallbackBootloader { .. })),
+            None
+        );
+        assert!(commands(&plan).contains("mkfs.fat -F 32 -n CROWNBOOT /dev/sda5"));
     }
 
     #[test]
@@ -3123,7 +3138,10 @@ mod tests {
             after_delete.root.size_bytes(),
             untouched.root.size_bytes()
         );
-        assert_eq!(after_delete.root.start_sector, 800_032_768);
+        assert_eq!(
+            after_delete.boot_partition.map(|boot| boot.start_sector),
+            Some(800_032_768)
+        );
     }
 
     /// The authorization list is a list and not a flag: an edit naming one
@@ -3156,7 +3174,7 @@ mod tests {
     /// confirmation page can meaningfully warn about.
     #[test]
     fn the_esp_is_not_destroyable_even_when_authorized() {
-        let mut plan = iso_plan_with(|_| {}).expect("a plan");
+        let mut plan = plan_with(|_| {}).expect("a plan");
         let disk = snapshot(fixture::FINDMNT_JSON_IN_RAM).disks[0].clone();
 
         plan.authorized_destructive = vec!["/dev/sda1".to_owned()];

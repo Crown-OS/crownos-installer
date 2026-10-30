@@ -31,7 +31,7 @@ pub fn page(cx: &mut Cx, wizard: Signal<Wizard>, page: Page) -> AnyView {
         Page::Welcome => welcome::build(cx, wizard),
         Page::Network => network::build(cx, wizard),
         Page::Disk => disk::build(cx, wizard),
-        Page::Space => space::build(cx, wizard),
+        Page::Space => space::build(wizard),
         Page::Partitions => partitions::build(cx, wizard),
         Page::Account => account::build(cx, wizard),
         Page::Confirm => confirm::build(cx, wizard),

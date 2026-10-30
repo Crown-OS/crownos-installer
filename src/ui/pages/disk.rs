@@ -5,9 +5,9 @@ use crownui::prelude::{Cx, Signal, Styled, View, keyed, vstack};
 
 use crate::engine::plan::bytes;
 use crate::engine::probe::Disk;
+use crate::ui::Wizard;
 use crate::ui::components::{Tone, note, surface};
 use crate::ui::layout::{BLOCK_GAP, PageParts, TILE_GAP, back_pill, next_pill};
-use crate::ui::{Wizard, esp_of};
 use crate::util::mirror::mirror;
 
 /// More disks than this and the list gets a search field.
@@ -139,10 +139,5 @@ pub fn disk_summary(disk: &Disk) -> String {
         .iter()
         .map(|gap| disk.bytes(gap.sectors))
         .sum();
-    let esp = if esp_of(disk).is_some() {
-        "EFI partition"
-    } else {
-        "no EFI partition"
-    };
-    format!("{size} · {esp} · {} free", bytes(free))
+    format!("{size} · {} free", bytes(free))
 }

@@ -437,17 +437,18 @@ fn the_disk_page_needs_a_disk_before_it_continues() {
 // ---- Space ----
 
 #[test]
-fn the_filesystem_tiles_reach_the_plan() {
+fn the_space_page_shows_the_automatic_layout_and_it_reaches_the_plan() {
     let mut wizard = on(iso_wizard(), Page::Space);
     sign_in(&mut wizard);
     let mut app = window(wizard);
-    app.click(role(Role::RadioButton).name("btrfs — snapshots"))
-        .settle();
-    let tile = app.find(role(Role::RadioButton).name("btrfs — snapshots"));
-    assert_eq!(tile.value.as_deref(), Some("Selected"));
+    assert!(showing(
+        &mut app,
+        "CrownOS will create a 1.0 GiB boot partition"
+    ));
     press(&mut app, "Next");
     press(&mut app, "Next");
     assert!(showing(&mut app, "Ready to install"));
+    assert!(app.exists(role(Role::ListItem).name("Creating the boot partition")));
     assert!(app.exists(role(Role::ListItem).name("Formatting as btrfs")));
 }
 

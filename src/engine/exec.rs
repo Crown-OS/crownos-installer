@@ -38,7 +38,8 @@ use anyhow::{Context as _, Result};
 use crate::oobe::RootFilesystem;
 
 use super::base::{self, BOOT_ENTRY};
-use super::plan::{ESP_FALLBACK_LOADER, Plan, Role, Step};
+use super::disks::{self, Filesystem};
+use super::plan::{BOOT_FSLABEL, ESP_FALLBACK_LOADER, Plan, Role, Step};
 use super::probe::System;
 
 // --- MARK: Secrets ---
@@ -410,7 +411,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
         // edit, and the ordering inside a resize — filesystem before entry when
         // shrinking, after it when growing — is the kind of thing that must live
         // in exactly one place.
-        Step::EditPartitionTable(op) => super::disks::commands_for_op(op),
+        Step::EditPartitionTable(op) => disks::commands_for_op(op),
 
         Step::UnmountStagingMedium { target } => vec![
             // Lazy, because something in the live environment may still hold a
@@ -468,6 +469,10 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             RootFilesystem::Ext4 => vec![Cmd::run("mkfs.ext4", &["-F", "-L", label, device])],
             RootFilesystem::Btrfs => vec![Cmd::run("mkfs.btrfs", &["-f", "-L", label, device])],
         },
+
+        Step::MakeEsp { device } => {
+            vec![disks::mkfs(device, Filesystem::Fat32, Some(BOOT_FSLABEL))]
+        }
 
         Step::MakeSwap { device } => vec![
             Cmd::run("mkswap", &["--label", "crownos-swap", device]),
@@ -744,13 +749,14 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
 
 /// Where the one-line `sfdisk --append` script is written.
 ///
-/// Two paths rather than one so that a dry run's log shows the swap script and
-/// the root script as separate files, which is the difference between a log you
+/// One path per partition so that a dry run's log shows each script as a
+/// separate file, which is the difference between a log you
 /// can read and a log with the same filename in it twice.
 fn sfdisk_script_path(role: Role) -> String {
     match role {
         Role::Root => "/run/crownos-installer/root.sfdisk".to_owned(),
         Role::Swap => "/run/crownos-installer/swap.sfdisk".to_owned(),
+        Role::Boot => "/run/crownos-installer/boot.sfdisk".to_owned(),
     }
 }
 
@@ -825,6 +831,7 @@ mod tests {
             ids: NewIds {
                 root_partuuid: "12345678-1234-1234-1234-123456789abc".to_owned(),
                 swap_partuuid: "87654321-4321-4321-4321-cba987654321".to_owned(),
+                boot_partuuid: "abcdef01-2345-4678-9abc-def012345678".to_owned(),
             },
         })
         .expect("plan")
@@ -1143,6 +1150,7 @@ mod tests {
             ids: NewIds {
                 root_partuuid: "12345678-1234-1234-1234-123456789abc".to_owned(),
                 swap_partuuid: "87654321-4321-4321-4321-cba987654321".to_owned(),
+                boot_partuuid: "abcdef01-2345-4678-9abc-def012345678".to_owned(),
             },
         })
         .expect("plan");

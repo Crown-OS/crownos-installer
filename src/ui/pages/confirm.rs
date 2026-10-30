@@ -54,7 +54,16 @@ fn point_of_no_return(plan: &Plan, dry_run: bool) -> impl View + use<> {
         );
     }
     let destructive = plan.destructive_devices().join(", ");
-    let file_level = plan.file_level_devices().join(", ");
+    let file_level = plan.file_level_devices();
+    let shared = if file_level.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " {} gets files added to it so CrownOS and whatever else is here can share one \
+             boot loader; nothing there is erased.",
+            file_level.join(", ")
+        )
+    };
     let kept = plan.windows.as_ref().map_or_else(String::new, |windows| {
         format!(
             " Your existing {} is not touched at any point.",
@@ -64,11 +73,7 @@ fn point_of_no_return(plan: &Plan, dry_run: bool) -> impl View + use<> {
     alert(
         Tone::Danger,
         "This is the point of no return",
-        format!(
-            "Continuing will write to {destructive}. {file_level} gets files added to it so \
-             CrownOS and whatever else is here can share one boot loader; nothing there is \
-             erased.{kept}"
-        ),
+        format!("Continuing will write to {destructive}.{shared}{kept}"),
     )
 }
 

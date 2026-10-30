@@ -85,7 +85,7 @@ needs is on the kernel command line. The options exist for rehearsing it.
                         kernel command line's idea of where it is.
     --cmdline <string>  Use <string> instead of /proc/cmdline.
     --autoinstall <path>
-                        Install with the account, filesystem and kernel
+                        Install with the account and kernel
                         arguments in <path>, without a window, onto the target
                         the disk page would choose. For the ISO's install test.
     --help              This.
@@ -263,7 +263,8 @@ fn new_ids(system: &dyn engine::probe::System) -> NewIds {
     };
     let root = read();
     let swap = read();
-    if root.is_none() || swap.is_none() {
+    let boot = read();
+    if root.is_none() || swap.is_none() || boot.is_none() {
         eprintln!(
             "crownos-installer: could not read /proc/sys/kernel/random/uuid; \
              falling back to fixed partition GUIDs"
@@ -272,12 +273,14 @@ fn new_ids(system: &dyn engine::probe::System) -> NewIds {
     NewIds {
         root_partuuid: root.unwrap_or_else(|| FALLBACK_ROOT_PARTUUID.to_owned()),
         swap_partuuid: swap.unwrap_or_else(|| FALLBACK_SWAP_PARTUUID.to_owned()),
+        boot_partuuid: boot.unwrap_or_else(|| FALLBACK_BOOT_PARTUUID.to_owned()),
     }
 }
 
 /// Used only when the kernel's UUID generator cannot be read. See [`new_ids`].
 const FALLBACK_ROOT_PARTUUID: &str = "c0c0c0c0-0001-4001-8001-c0c0c0c0c0c0";
 const FALLBACK_SWAP_PARTUUID: &str = "c0c0c0c0-0002-4002-8002-c0c0c0c0c0c0";
+const FALLBACK_BOOT_PARTUUID: &str = "c0c0c0c0-0003-4003-8003-c0c0c0c0c0c0";
 
 /// `--print-plan`: the whole plan, and the commands it would run, on stdout.
 ///
@@ -340,16 +343,13 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>) -> ExitCode {
         }
         provenance::Provenance::Iso => {
             let target = ui::Target::best_for(&context.snapshot);
-            let (Some(disk), Some(esp), Some(region_start_sector)) = (
-                target.disk.clone(),
-                target.esp.clone(),
-                target.region_start_sector,
-            ) else {
+            let (Some(disk), Some(region_start_sector)) =
+                (target.disk.clone(), target.region_start_sector)
+            else {
                 println!(
-                    "REFUSED\n\nNo disk on this machine has both an EFI system partition \
-                     and unallocated space to install into. In the wizard this is where \
-                     the partition editor comes in; `--print-plan` has nobody to ask, so \
-                     it stops here."
+                    "REFUSED\n\nNo GPT disk on this machine has unallocated space to \
+                     install into. In the wizard this is where the partition editor comes \
+                     in; `--print-plan` has nobody to ask, so it stops here."
                 );
                 return ExitCode::FAILURE;
             };
@@ -357,10 +357,7 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>) -> ExitCode {
             plan_iso(&IsoInput {
                 snapshot: &context.snapshot,
                 disk,
-                esp,
                 region_start_sector,
-                root_filesystem: target.filesystem,
-                swap: target.swap,
                 locale: target.locale.clone(),
                 account,
                 ids: context.ids.clone(),
@@ -395,10 +392,18 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>) -> ExitCode {
             swap.start_sector
         );
     }
-    println!(
-        "esp:      {} (shared, written at file level only)",
-        plan.esp.path
-    );
+    match &plan.boot_partition {
+        Some(boot) => println!(
+            "boot:     {} — {} at sector {}",
+            boot.path,
+            engine::plan::bytes(boot.size_bytes()),
+            boot.start_sector
+        ),
+        None => println!(
+            "esp:      {} (shared, written at file level only)",
+            plan.esp.path
+        ),
+    }
     match &plan.windows {
         Some(windows) => println!("kept:     {} (never touched)", windows.path),
         None => println!("kept:     nothing on this disk is designated to preserve"),
