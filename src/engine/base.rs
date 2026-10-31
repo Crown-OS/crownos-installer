@@ -37,13 +37,11 @@ pub const BOOT_ENTRY: &str = "crownos";
 /// The group whose members may use `sudo`.
 pub const ADMIN_GROUP: &str = "wheel";
 
-/// Units enabled in the new system. `crown-sessiond` is the login screen:
-/// CrownOS ships no display manager.
-pub const SERVICES: &[&str] = &[
-    "NetworkManager.service",
-    "systemd-timesyncd.service",
-    "crown-sessiond.service",
-];
+/// Units enabled in the new system. CrownOS ships no display manager: signing
+/// in on tty1 opens the desktop.
+pub const SERVICES: &[&str] = &["NetworkManager.service", "systemd-timesyncd.service"];
+
+const AUTOLOGIN_DROP_IN: &str = "/etc/systemd/system/getty@tty1.service.d/autologin.conf";
 
 /// The kernel package, and the name of its image and initramfs.
 pub const KERNEL: &str = "linux-cachyos";
@@ -126,6 +124,18 @@ pub fn add_crownos_repository(root: &str) -> Vec<Cmd> {
             path: format!("{root}/etc/pacman.conf"),
         },
     ]
+}
+
+/// Sign `username` in on tty1 at boot without a password.
+pub fn autologin(root: &str, username: &str) -> Cmd {
+    Cmd::WriteFile {
+        path: format!("{root}{AUTOLOGIN_DROP_IN}"),
+        contents: format!(
+            "[Service]\n\
+             ExecStart=\n\
+             ExecStart=-/usr/bin/agetty -o '-p -f -- \\\\u' --noclear --autologin {username} %I $TERM\n"
+        ),
+    }
 }
 
 /// Generate and select `locale`.
@@ -238,6 +248,16 @@ mod tests {
         };
         assert_eq!(path, format!("/mnt/efi/loader/entries/{BOOT_ENTRY}.conf"));
         assert!(contents.ends_with("options root=PARTUUID=x rw\n"));
+    }
+
+    #[test]
+    fn autologin_replaces_the_tty1_getty_command() {
+        let Cmd::WriteFile { path, contents } = autologin("/mnt", "crown") else {
+            panic!("autologin is a drop-in file");
+        };
+        assert_eq!(path, format!("/mnt{AUTOLOGIN_DROP_IN}"));
+        assert!(contents.contains("ExecStart=\n"));
+        assert!(contents.contains("--autologin crown %I $TERM\n"));
     }
 
     #[test]

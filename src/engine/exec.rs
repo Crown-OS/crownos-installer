@@ -679,17 +679,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             vec![Cmd::chroot(root, "passwd", &["--lock", "root"])]
         }
 
-        Step::EnableAutologin { root, username } => vec![
-            Cmd::MakeDirs {
-                path: format!("{root}/etc/crownos"),
-            },
-            // crown-sessiond logs this user in once per boot; there is no
-            // getty in the way and no display manager.
-            Cmd::WriteFile {
-                path: format!("{root}/etc/crownos/sessiond.conf"),
-                contents: format!("autologin = {username}\n"),
-            },
-        ],
+        Step::EnableAutologin { root, username } => vec![base::autologin(root, username)],
 
         Step::EnableServices { root, units } => {
             let mut args = vec!["enable".to_owned()];

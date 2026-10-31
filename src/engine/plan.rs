@@ -715,7 +715,7 @@ pub enum Step {
     SetUserPassword { root: String, username: String },
     /// `passwd --lock root`.
     LockRootAccount { root: String },
-    /// crown-sessiond's setting that logs the user straight in at boot.
+    /// Sign the user in on tty1 at boot, which opens the desktop.
     EnableAutologin { root: String, username: String },
     /// `systemctl enable`.
     EnableServices { root: String, units: Vec<String> },
@@ -3114,7 +3114,7 @@ mod tests {
             "mkinitcpio -P",
             "loader/entries/crownos.conf",
             "%wheel ALL=(ALL:ALL) ALL",
-            "crown-sessiond.service",
+            "systemctl enable NetworkManager.service systemd-timesyncd.service",
         ] {
             assert!(log.contains(expected), "`{expected}` missing from {log}");
         }
