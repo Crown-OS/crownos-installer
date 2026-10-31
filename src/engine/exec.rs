@@ -692,6 +692,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
         }
 
         Step::Unmount { at } => vec![
+            base::stop_keyring_daemons(at),
             Cmd::run("swapoff", &["--all"]),
             Cmd::run("umount", &["--recursive", at]),
         ],
@@ -1162,6 +1163,10 @@ mod tests {
         let umount = log.find("umount --recursive").expect("an unmount");
         let grow = log.find("resize2fs").expect("a resize");
         assert!(umount < grow, "{log}");
+        let stop_gnupg = log
+            .find("gpgconf --homedir /mnt/etc/pacman.d/gnupg --kill all")
+            .expect("the keyring daemons are stopped");
+        assert!(stop_gnupg < umount, "{log}");
     }
 
     fn payload_like(free_start: u64, free_bytes: u64) -> Oobe {

@@ -64,6 +64,8 @@ const BTRFS_PACKAGE: &str = "btrfs-progs";
 
 const REPO_KEY_PATH: &str = "/etc/pacman.d/crownos-archive-keyring.asc";
 
+const PACMAN_GNUPG_DIR: &str = "/etc/pacman.d/gnupg";
+
 /// The packages `pacstrap` installs. crownos-iso's `profile/install.packages`
 /// must name every one of them, or the live image cannot install offline.
 pub fn packages(filesystem: RootFilesystem) -> Vec<String> {
@@ -89,6 +91,20 @@ pub fn bootstrap(root: &str, packages: &[String]) -> Cmd {
         program: "pacstrap".to_owned(),
         args,
     }
+}
+
+/// Stop the GnuPG daemons that populating the keyrings in `root` left running
+/// out of it, which would otherwise keep it from being unmounted.
+pub fn stop_keyring_daemons(root: &str) -> Cmd {
+    Cmd::run(
+        "gpgconf",
+        &[
+            "--homedir",
+            &format!("{root}{PACMAN_GNUPG_DIR}"),
+            "--kill",
+            "all",
+        ],
+    )
 }
 
 /// Point the installed system at the CachyOS builds `microarch` runs, with
