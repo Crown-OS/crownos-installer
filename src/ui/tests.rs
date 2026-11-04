@@ -35,6 +35,7 @@ pub(super) fn payload_context(user: Option<UserAccount>, auto_install: bool) -> 
             swap: SwapPlan::None,
             root_filesystem: RootFilesystem::Ext4,
             keep_windows: true,
+            ai_features: crate::oobe::AiFeatures::Disabled,
         },
         target: OobeTarget {
             esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),

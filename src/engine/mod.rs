@@ -29,6 +29,7 @@
 //! command that consumes it takes it on stdin so it never appears in an argument
 //! vector either. See [`exec::Cmd`].
 
+pub mod ai;
 pub mod base;
 pub mod disks;
 pub mod exec;

@@ -547,6 +547,18 @@ fn installing_starts_from_the_confirmation_and_lights_the_first_step() {
 }
 
 #[test]
+fn the_ai_switch_adds_the_acceleration_step_to_the_plan() {
+    let mut wizard = on(payload_wizard(), Page::Account);
+    sign_in(&mut wizard);
+    wizard.go(Page::Confirm);
+    let mut app = window(wizard);
+    let ai_step = role(Role::ListItem).name("Setting up AI acceleration");
+    assert!(!app.exists(ai_step.clone()));
+    app.click(role(Role::Switch)).settle();
+    assert!(app.exists(ai_step));
+}
+
+#[test]
 fn the_install_page_shows_finished_running_and_waiting_steps() {
     let mut wizard = committed();
     for index in 0..3 {

@@ -427,6 +427,7 @@ pub(crate) mod tests {
                 swap: crate::oobe::SwapPlan::None,
                 root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
+                ai_features: crate::oobe::AiFeatures::Disabled,
             },
             target: crate::oobe::Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),

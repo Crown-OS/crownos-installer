@@ -362,6 +362,7 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>) -> ExitCode {
                 account,
                 ids: context.ids.clone(),
                 edits: Vec::new(),
+                ai_features: oobe::AiFeatures::Enabled,
             })
         }
     };

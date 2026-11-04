@@ -41,8 +41,10 @@ use serde::Deserialize;
 
 use crate::util::cpuinfo::{self, Microarch};
 use crate::util::meminfo;
+use crate::util::pci::{self, Accelerator};
 
-use super::base::REPO_KEY_LIVE_PATH;
+use super::ai::CPU_META;
+use super::base::{OFFLINE_PACMAN_CONF, REPO_KEY_LIVE_PATH};
 
 /// Where archiso mounts the medium it booted from.
 ///
@@ -70,6 +72,7 @@ pub const COPYTORAM: &str = "/run/archiso/copytoram";
 
 const MEMINFO: &str = "/proc/meminfo";
 const CPUINFO: &str = "/proc/cpuinfo";
+const PCI_DEVICES: &str = "/sys/bus/pci/devices";
 
 // --- MARK: System access ---
 
@@ -94,6 +97,9 @@ pub trait System {
 
     /// Write `contents` to `path`, creating parent directories.
     fn write_file(&self, path: &str, contents: &str) -> Result<()>;
+
+    /// The names of the entries in a directory. Used for sysfs.
+    fn list_dir(&self, path: &str) -> Result<Vec<String>>;
 
     /// Whether `path` exists. Separate from [`read_file`](Self::read_file)
     /// because "already there, leave it alone" is a decision the executor makes
@@ -145,6 +151,13 @@ impl System for RealSystem {
     fn exists(&self, path: &str) -> bool {
         std::path::Path::new(path).exists()
     }
+
+    fn list_dir(&self, path: &str) -> Result<Vec<String>> {
+        std::fs::read_dir(path)
+            .with_context(|| format!("could not list {path}"))?
+            .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+            .collect()
+    }
 }
 
 // --- MARK: Snapshot ---
@@ -165,6 +178,11 @@ pub struct SystemSnapshot {
     /// Whether the live image ships the CrownOS repository's signing key. An
     /// image built without one installs systems that do not use the repository.
     pub crownos_repo_key: bool,
+    /// Every GPU and NPU on the PCI bus, sorted.
+    pub accelerators: Vec<Accelerator>,
+    /// Whether the live image's offline repository carries the AI packages. An
+    /// image built without them cannot offer AI features.
+    pub ai_bundled: bool,
 }
 
 impl SystemSnapshot {
@@ -445,7 +463,38 @@ pub fn probe(system: &dyn System) -> Result<SystemSnapshot> {
         memory_bytes,
         microarch,
         crownos_repo_key: system.exists(REPO_KEY_LIVE_PATH),
+        accelerators: read_accelerators(system),
+        ai_bundled: system
+            .run(
+                "pacman",
+                &["--config", OFFLINE_PACMAN_CONF, "-Sp", CPU_META],
+            )
+            .is_ok(),
     })
+}
+
+/// The machine's GPUs and NPUs. An unreadable bus is no accelerators, which
+/// leaves AI features on their CPU fallbacks rather than failing the install.
+fn read_accelerators(system: &dyn System) -> Vec<Accelerator> {
+    let read = |slot: &str, attribute: &str| {
+        system
+            .read_file(&format!("{PCI_DEVICES}/{slot}/{attribute}"))
+            .ok()
+    };
+    let mut accelerators: Vec<Accelerator> = system
+        .list_dir(PCI_DEVICES)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|slot| {
+            pci::accelerator(
+                &read(slot, "vendor")?,
+                &read(slot, "device")?,
+                &read(slot, "class")?,
+            )
+        })
+        .collect();
+    accelerators.sort_unstable();
+    accelerators
 }
 
 /// What `lsblk` says about one block device, before it is matched up with the
@@ -841,6 +890,19 @@ pub(crate) mod fixture {
         fn exists(&self, path: &str) -> bool {
             self.present.iter().any(|p| p == path)
         }
+
+        fn list_dir(&self, path: &str) -> Result<Vec<String>> {
+            let prefix = format!("{path}/");
+            let mut entries: Vec<String> = self
+                .files
+                .keys()
+                .filter_map(|file| file.strip_prefix(&prefix)?.split('/').next())
+                .map(str::to_owned)
+                .collect();
+            entries.sort_unstable();
+            entries.dedup();
+            Ok(entries)
+        }
     }
 
     /// One row of a synthetic partition table.
@@ -1007,6 +1069,10 @@ pub(crate) mod fixture {
                 LSBLK_JSON,
             )
             .with_command("sfdisk --json /dev/sda", sfdisk)
+            .with_command(
+                "pacman --config /etc/pacman.d/crownos-offline.conf -Sp crownos-ai-cpu",
+                "file:///var/cache/crownos/mirror/crownos-ai-cpu-0.1.0-1-any.pkg.tar.zst",
+            )
             .with_command(
                 "findmnt --json --list --output SOURCE,TARGET,FSTYPE",
                 findmnt,

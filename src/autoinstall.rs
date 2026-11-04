@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::engine::exec::{Event, Mode, Secrets, execute};
 use crate::engine::plan::{Account, IsoInput, Plan, Step, plan_iso};
 use crate::engine::probe::RealSystem;
-use crate::oobe::Locale;
+use crate::oobe::{AiFeatures, Locale};
 use crate::ui;
 
 /// The line a successful run ends with, which the install test waits for.
@@ -28,6 +28,8 @@ pub struct Config {
     /// Appended to the installed system's kernel command line.
     #[serde(default)]
     pub kernel_args: String,
+    #[serde(default)]
+    pub ai_features: AiFeatures,
 }
 
 impl Config {
@@ -66,6 +68,7 @@ fn plan_for(context: &ui::Context, config: &Config) -> Result<Plan> {
         },
         ids: context.ids.clone(),
         edits: Vec::new(),
+        ai_features: config.ai_features,
     })
     .context("the install was refused")
 }

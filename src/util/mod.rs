@@ -4,5 +4,6 @@ pub mod cpuinfo;
 pub mod meminfo;
 pub mod mirror;
 pub mod network;
+pub mod pci;
 pub mod png;
 pub mod worker;

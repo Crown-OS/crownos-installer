@@ -59,9 +59,10 @@
 
 use std::fmt;
 
-use crate::oobe::{Locale, Oobe, RootFilesystem, StagingKind, SwapPlan, UserAccount};
+use crate::oobe::{AiFeatures, Locale, Oobe, RootFilesystem, StagingKind, SwapPlan, UserAccount};
 use crate::util::cpuinfo::Microarch;
 
+use super::ai::{self, AiPlan};
 use super::base;
 use super::probe::{Disk, Gap, Partition, SystemSnapshot};
 
@@ -670,6 +671,9 @@ pub enum Step {
     ConfigureRepositories { root: String, microarch: Microarch },
     /// Trust the CrownOS repository and list it for updates.
     AddCrownosRepository { root: String },
+    /// Record the AI stack chosen for this machine and fetch the parts of it
+    /// the live image could not bundle.
+    ConfigureAiAcceleration { root: String, plan: AiPlan },
     /// `genfstab` into the new system's `/etc/fstab`.
     GenerateFstab { root: String },
     /// Create a swapfile and add it to fstab.
@@ -792,6 +796,7 @@ impl Step {
             Self::InstallBaseSystem { .. } => "Installing packages".to_owned(),
             Self::ConfigureRepositories { .. } => "Configuring package repositories".to_owned(),
             Self::AddCrownosRepository { .. } => "Adding the CrownOS repository".to_owned(),
+            Self::ConfigureAiAcceleration { .. } => "Setting up AI acceleration".to_owned(),
             Self::GenerateFstab { .. } => "Writing the filesystem table".to_owned(),
             Self::CreateSwapFile { .. } => "Creating the swap file".to_owned(),
             Self::ConfigureLocale { .. } => "Setting the language".to_owned(),
@@ -1462,10 +1467,19 @@ fn system_steps(
     snapshot: &SystemSnapshot,
 ) -> Vec<Step> {
     let root = ROOT_MOUNT.to_owned();
+    let ai_plan = (oobe.install.ai_features == AiFeatures::Enabled && snapshot.ai_bundled)
+        .then(|| ai::ai_plan(&snapshot.accelerators));
+    let mut packages = base::packages(oobe.install.root_filesystem);
+    packages.extend(
+        ai_plan
+            .iter()
+            .flat_map(AiPlan::offline_packages)
+            .map(str::to_owned),
+    );
     let mut steps = vec![
         Step::InstallBaseSystem {
             root: root.clone(),
-            packages: base::packages(oobe.install.root_filesystem),
+            packages,
         },
         Step::GenerateFstab { root: root.clone() },
     ];
@@ -1534,6 +1548,12 @@ fn system_steps(
     }
     if snapshot.crownos_repo_key {
         steps.push(Step::AddCrownosRepository { root: root.clone() });
+    }
+    if let Some(plan) = ai_plan {
+        steps.push(Step::ConfigureAiAcceleration {
+            root: root.clone(),
+            plan,
+        });
     }
     steps.push(Step::EnableServices {
         root,
@@ -1658,6 +1678,7 @@ pub struct IsoInput<'a> {
     /// before anything else in the plan, and the reason the plan may destroy
     /// pre-existing partitions at all — see [`Plan::authorized_destructive`].
     pub edits: Vec<super::disks::DiskOp>,
+    pub ai_features: AiFeatures,
 }
 
 /// Build an install plan from the user's own choices, with no handoff payload.
@@ -1881,6 +1902,7 @@ fn synthesize_oobe(
             // but true is the honest value: an ISO install preserves everything
             // the user did not explicitly delete in the editor.
             keep_windows: true,
+            ai_features: input.ai_features,
         },
         target: crate::oobe::Target {
             esp_partuuid: esp.partuuid.clone(),
@@ -1971,6 +1993,7 @@ mod tests {
                 },
                 root_filesystem: RootFilesystem::Ext4,
                 keep_windows: true,
+                ai_features: crate::oobe::AiFeatures::Disabled,
             },
             target: Target {
                 esp_partuuid: ESP_PARTUUID.to_owned(),
@@ -2822,8 +2845,11 @@ mod tests {
             microarch: Microarch::Generic,
             crownos_repo_key: false,
             edits: Vec::new(),
+            accelerators: Vec::new(),
+            ai_features: AiFeatures::Disabled,
         };
         edit(&mut target);
+        snapshot.accelerators = target.accelerators;
         snapshot.memory_bytes = target.memory_bytes;
         snapshot.microarch = target.microarch;
         snapshot.crownos_repo_key = target.crownos_repo_key;
@@ -2835,6 +2861,7 @@ mod tests {
             account: account(),
             ids: ids(),
             edits: target.edits,
+            ai_features: target.ai_features,
         })
     }
 
@@ -2848,6 +2875,8 @@ mod tests {
         microarch: Microarch,
         crownos_repo_key: bool,
         edits: Vec<crate::engine::disks::DiskOp>,
+        accelerators: Vec<crate::util::pci::Accelerator>,
+        ai_features: AiFeatures,
     }
 
     #[test]
@@ -2873,6 +2902,47 @@ mod tests {
         assert!(adds_it(
             iso_plan_with(|target| target.crownos_repo_key = true).expect("a plan")
         ));
+    }
+
+    #[test]
+    fn ai_features_install_the_detected_stack_and_only_when_asked() {
+        use crate::util::pci::{Accelerator, AcceleratorKind, AcceleratorVendor};
+        let rtx_4090 = Accelerator {
+            vendor: AcceleratorVendor::Nvidia,
+            kind: AcceleratorKind::Gpu,
+            device_id: 0x2684,
+        };
+        let packages = |plan: &Plan| -> Vec<String> {
+            plan.steps
+                .iter()
+                .find_map(|step| match step {
+                    Step::InstallBaseSystem { packages, .. } => Some(packages.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        let configures_ai = |plan: &Plan| {
+            plan.steps
+                .iter()
+                .any(|step| matches!(step, Step::ConfigureAiAcceleration { .. }))
+        };
+
+        let declined =
+            iso_plan_with(|target| target.accelerators = vec![rtx_4090]).expect("a plan");
+        assert!(!configures_ai(&declined));
+        assert!(
+            !packages(&declined)
+                .iter()
+                .any(|p| p.starts_with("crownos-ai-"))
+        );
+
+        let accepted = iso_plan_with(|target| {
+            target.accelerators = vec![rtx_4090];
+            target.ai_features = AiFeatures::Enabled;
+        })
+        .expect("a plan");
+        assert!(configures_ai(&accepted));
+        assert!(packages(&accepted).iter().any(|p| p == "crownos-ai-nvidia"));
     }
 
     /// The baseline: no payload, no Windows partition designated, and a boot
@@ -2956,6 +3026,7 @@ mod tests {
             account: account(),
             ids: ids(),
             edits: Vec::new(),
+            ai_features: AiFeatures::Disabled,
         })
         .expect("no ESP needed");
         assert!(plan.boot_partition.is_some());
@@ -2989,6 +3060,7 @@ mod tests {
             account: account(),
             ids: ids(),
             edits: Vec::new(),
+            ai_features: AiFeatures::Disabled,
         })
         .expect_err("MBR is refused");
         assert!(matches!(refusal, Refusal::NotGpt { .. }), "{refusal:?}");
@@ -3023,6 +3095,7 @@ mod tests {
             account: account(),
             ids: ids(),
             edits,
+            ai_features: AiFeatures::Disabled,
         };
 
         let refusal = plan_iso(&input(Vec::new())).expect_err("no table, no install");
@@ -3061,6 +3134,7 @@ mod tests {
             },
             ids: ids(),
             edits: Vec::new(),
+            ai_features: AiFeatures::Disabled,
         })
         .expect_err("a username with a space in it is refused");
         assert!(

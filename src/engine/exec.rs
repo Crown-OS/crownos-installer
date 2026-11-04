@@ -150,6 +150,9 @@ pub enum Cmd {
     CopyIfPresent { from: String, to: String },
     /// `mkdir -p`.
     MakeDirs { path: String },
+    /// Run a command whose failure is logged rather than stopping the install:
+    /// a download the installed system can do without.
+    BestEffort(Box<Cmd>),
 }
 
 impl fmt::Display for Cmd {
@@ -176,6 +179,7 @@ impl fmt::Display for Cmd {
             Self::WriteFileIfAbsent { path, contents } => write_display(f, path, contents, true),
             Self::CopyIfPresent { from, to } => write!(f, "cp {from} {to} (if {from} exists)"),
             Self::MakeDirs { path } => write!(f, "mkdir -p {path}"),
+            Self::BestEffort(command) => write!(f, "{command}  # allowed to fail"),
         }
     }
 }
@@ -234,6 +238,10 @@ impl Cmd {
         }
     }
 
+    pub(super) fn best_effort(command: Self) -> Self {
+        Self::BestEffort(Box::new(command))
+    }
+
     /// Carry out the command.
     fn apply(&self, system: &dyn System) -> Result<String> {
         match self {
@@ -283,6 +291,9 @@ impl Cmd {
                 }
             }
             Self::MakeDirs { path } => system.run("mkdir", &["-p", "--", path]),
+            Self::BestEffort(command) => Ok(command
+                .apply(system)
+                .unwrap_or_else(|error| format!("skipped: {error:#}"))),
         }
     }
 }
@@ -493,6 +504,8 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
         ],
 
         Step::InstallBaseSystem { root, packages } => vec![base::bootstrap(root, packages)],
+
+        Step::ConfigureAiAcceleration { root, plan } => plan.commands(root),
 
         Step::ConfigureRepositories { root, microarch } => {
             vec![base::configure_repositories(root, *microarch)]
@@ -788,6 +801,7 @@ mod tests {
                 },
                 root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
+                ai_features: crate::oobe::AiFeatures::Disabled,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -1180,6 +1194,7 @@ mod tests {
                 swap: SwapPlan::None,
                 root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
+                ai_features: crate::oobe::AiFeatures::Disabled,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),

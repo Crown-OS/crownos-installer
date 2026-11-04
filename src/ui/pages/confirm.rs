@@ -1,12 +1,15 @@
 //! Either flow: the last look before anything is written.
 
-use crownui::kit::ButtonVariant;
-use crownui::prelude::{Cx, Listeners, Signal, Styled, View, vstack};
+use crownui::kit::{ButtonVariant, setting_row, toggle};
+use crownui::prelude::{Cx, Listeners, Signal, Styled, View, keyed, vstack};
 
+use crate::engine::ai::{Backend, ai_plan};
 use crate::engine::plan::{Plan, Reclaim, bytes};
+use crate::oobe::AiFeatures;
 use crate::ui::Wizard;
 use crate::ui::components::{Status, Tone, alert, note, pill, stage_row, surface};
 use crate::ui::layout::{BLOCK_GAP, PageParts, back_pill, caption, tiles};
+use crate::util::mirror::mirror;
 
 pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
     let Some((plan, dry_run)) = wizard.with_untracked(cx, |wizard| {
@@ -21,9 +24,19 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
         .map(|warning| alert(Tone::Caution, "Worth knowing", warning.clone()))
         .collect();
 
+    let step_list = keyed(
+        move |runtime| wizard.with(runtime, |wizard| wizard.ai_features),
+        move |cx, _| {
+            let step_rows = wizard
+                .with_untracked(cx, |wizard| wizard.plan().cloned())
+                .map(|plan| steps(cx, &plan));
+            vstack((step_rows,))
+        },
+    );
     let content = vstack((
         point_of_no_return(&plan, dry_run),
-        steps(cx, &plan),
+        ai_features(cx, wizard),
+        step_list,
         vstack(warnings).gap(BLOCK_GAP),
         note(Tone::Info, reclaim(&plan)),
     ))
@@ -74,6 +87,55 @@ fn point_of_no_return(plan: &Plan, dry_run: bool) -> impl View + use<> {
         Tone::Danger,
         "This is the point of no return",
         format!("Continuing will write to {destructive}.{shared}{kept}"),
+    )
+}
+
+/// The switch for hardware-accelerated AI, with what it would set up here.
+/// Absent when the live image does not bundle the AI packages.
+fn ai_features(cx: &mut Cx, wizard: Signal<Wizard>) -> Option<impl View + use<>> {
+    let bundled = wizard.with_untracked(cx, |wizard| {
+        wizard
+            .context()
+            .is_some_and(|context| context.snapshot.ai_bundled)
+    });
+    if !bundled {
+        return None;
+    }
+    let enabled = mirror(
+        cx,
+        wizard,
+        |wizard| wizard.ai_features == AiFeatures::Enabled,
+        |wizard, enabled| {
+            wizard.set_ai_features(if enabled {
+                AiFeatures::Enabled
+            } else {
+                AiFeatures::Disabled
+            });
+        },
+    );
+    let backends = wizard.with_untracked(cx, |wizard| {
+        wizard
+            .context()
+            .map(|context| ai_plan(&context.snapshot.accelerators).backends)
+            .unwrap_or_default()
+    });
+    Some(surface((
+        setting_row("AI features", toggle(enabled)),
+        caption(ai_summary(&backends)),
+    )))
+}
+
+fn ai_summary(backends: &[Backend]) -> String {
+    let names: Vec<&str> = backends.iter().map(|backend| backend.name()).collect();
+    let maxine = if backends.contains(&Backend::Maxine) {
+        " NVIDIA Maxine is downloaded from NVIDIA and used under NVIDIA's license terms."
+    } else {
+        ""
+    };
+    format!(
+        "Background blur, video enhancement and noise cancellation, accelerated by {}. \
+         Larger runtimes download once the new system is online.{maxine}",
+        names.join(", then ")
     )
 }
 

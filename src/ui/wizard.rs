@@ -7,6 +7,7 @@ use crate::engine::exec::{Event, Mode, Secrets};
 use crate::engine::plan::{IsoInput, Plan, PlanInput, Refusal, plan, plan_iso};
 use crate::engine::probe::Disk;
 use crate::network::Network;
+use crate::oobe::AiFeatures;
 use crate::provenance::Provenance;
 
 use super::editor::{PartitionAction, Row};
@@ -33,6 +34,9 @@ pub struct Wizard {
     /// depends only on the page. Recorded on the way in rather than inferred on
     /// the way out.
     pub editor_return: Option<Page>,
+    /// Whether the ISO flow sets up AI acceleration. The Windows flow's payload
+    /// carries its own answer.
+    pub ai_features: AiFeatures,
     /// The plan as of the last time something that matters changed. Recomputed
     /// rather than derived per frame, so the confirmation page is showing the
     /// same value the install will run.
@@ -63,10 +67,15 @@ impl Wizard {
             Some(oobe) => Target::from_payload(oobe, &context.snapshot),
             None => Target::best_for(&context.snapshot),
         };
+        let ai_features = context
+            .oobe()
+            .map(|oobe| oobe.install.ai_features)
+            .unwrap_or_default();
         let mut wizard = Self {
             page,
             form,
             target,
+            ai_features,
             ..Self::blocked_on(Ok(context), mode)
         };
         wizard.restage_plan();
@@ -100,6 +109,7 @@ impl Wizard {
             target: Target::default(),
             editor: Editor::default(),
             editor_return: None,
+            ai_features: AiFeatures::default(),
             staged: None,
             progress: InstallProgress::default(),
             mode,
@@ -241,14 +251,23 @@ impl Wizard {
         let account = self.form.account(autologin);
 
         self.staged = Some(match &context.provenance {
-            Provenance::WindowsInstaller { oobe, .. } => plan(&PlanInput {
-                oobe,
-                snapshot: &context.snapshot,
-                account,
-                ids: context.ids.clone(),
-            }),
+            Provenance::WindowsInstaller { oobe, .. } => {
+                let mut oobe = oobe.clone();
+                oobe.install.ai_features = self.ai_features;
+                plan(&PlanInput {
+                    oobe: &oobe,
+                    snapshot: &context.snapshot,
+                    account,
+                    ids: context.ids.clone(),
+                })
+            }
             Provenance::Iso => self.plan_iso(context, account),
         });
+    }
+
+    pub fn set_ai_features(&mut self, ai_features: AiFeatures) {
+        self.ai_features = ai_features;
+        self.restage_plan();
     }
 
     fn plan_iso(
@@ -273,6 +292,7 @@ impl Wizard {
             account,
             ids: context.ids.clone(),
             edits: self.editor.ops.clone(),
+            ai_features: self.ai_features,
         })
     }
 

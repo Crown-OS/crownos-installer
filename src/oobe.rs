@@ -125,6 +125,25 @@ pub struct Install {
     /// out explicitly rather than assumed so that a payload which somehow lost
     /// its meaning cannot be read as "wipe the disk" by default.
     pub keep_windows: bool,
+    /// Whether to set up on-device AI acceleration. Absent in payloads written
+    /// before the option existed, which means it was never offered.
+    #[serde(default, skip_serializing_if = "AiFeatures::is_disabled")]
+    pub ai_features: AiFeatures,
+}
+
+/// Whether the hardware-accelerated AI stack is installed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiFeatures {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+impl AiFeatures {
+    fn is_disabled(&self) -> bool {
+        *self == Self::Disabled
+    }
 }
 
 /// How swap is provided.
@@ -343,6 +362,7 @@ mod tests {
                 },
                 root_filesystem: RootFilesystem::Ext4,
                 keep_windows: true,
+                ai_features: crate::oobe::AiFeatures::Disabled,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
