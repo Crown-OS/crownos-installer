@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Install CrownOS
+GenericName=System Installer
+Comment=Set up CrownOS on this device
+Exec=crownos-installer
+Icon=system-installer
+Terminal=false
+StartupWMClass=crownos-installer
+Categories=System;
+Keywords=install;installer;setup;partition;disk;
