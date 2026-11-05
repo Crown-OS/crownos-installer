@@ -363,6 +363,7 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>) -> ExitCode {
                 ids: context.ids.clone(),
                 edits: Vec::new(),
                 ai_features: oobe::AiFeatures::Enabled,
+                android_apps: oobe::AndroidApps::Enabled { google_play: true },
             })
         }
     };

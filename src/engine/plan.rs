@@ -59,10 +59,13 @@
 
 use std::fmt;
 
-use crate::oobe::{AiFeatures, Locale, Oobe, RootFilesystem, StagingKind, SwapPlan, UserAccount};
+use crate::oobe::{
+    AiFeatures, AndroidApps, Locale, Oobe, RootFilesystem, StagingKind, SwapPlan, UserAccount,
+};
 use crate::util::cpuinfo::Microarch;
 
 use super::ai::{self, AiPlan};
+use super::android;
 use super::base;
 use super::probe::{Disk, Gap, Partition, SystemSnapshot};
 
@@ -674,6 +677,8 @@ pub enum Step {
     /// Record the AI stack chosen for this machine and fetch the parts of it
     /// the live image could not bundle.
     ConfigureAiAcceleration { root: String, plan: AiPlan },
+    /// Record that Android apps were chosen and arm their first-boot setup.
+    ConfigureAndroid { root: String, google_play: bool },
     /// `genfstab` into the new system's `/etc/fstab`.
     GenerateFstab { root: String },
     /// Create a swapfile and add it to fstab.
@@ -797,6 +802,7 @@ impl Step {
             Self::ConfigureRepositories { .. } => "Configuring package repositories".to_owned(),
             Self::AddCrownosRepository { .. } => "Adding the CrownOS repository".to_owned(),
             Self::ConfigureAiAcceleration { .. } => "Setting up AI acceleration".to_owned(),
+            Self::ConfigureAndroid { .. } => "Setting up Android apps".to_owned(),
             Self::GenerateFstab { .. } => "Writing the filesystem table".to_owned(),
             Self::CreateSwapFile { .. } => "Creating the swap file".to_owned(),
             Self::ConfigureLocale { .. } => "Setting the language".to_owned(),
@@ -1469,6 +1475,10 @@ fn system_steps(
     let root = ROOT_MOUNT.to_owned();
     let ai_plan = (oobe.install.ai_features == AiFeatures::Enabled && snapshot.ai_bundled)
         .then(|| ai::ai_plan(&snapshot.accelerators));
+    let google_play = match oobe.install.android_apps {
+        AndroidApps::Enabled { google_play } if snapshot.android_available => Some(google_play),
+        _ => None,
+    };
     let mut packages = base::packages(oobe.install.root_filesystem);
     packages.extend(
         ai_plan
@@ -1476,6 +1486,9 @@ fn system_steps(
             .flat_map(AiPlan::offline_packages)
             .map(str::to_owned),
     );
+    if google_play.is_some() {
+        packages.extend(android::packages(&snapshot.accelerators).map(str::to_owned));
+    }
     let mut steps = vec![
         Step::InstallBaseSystem {
             root: root.clone(),
@@ -1553,6 +1566,12 @@ fn system_steps(
         steps.push(Step::ConfigureAiAcceleration {
             root: root.clone(),
             plan,
+        });
+    }
+    if let Some(google_play) = google_play {
+        steps.push(Step::ConfigureAndroid {
+            root: root.clone(),
+            google_play,
         });
     }
     steps.push(Step::EnableServices {
@@ -1679,6 +1698,7 @@ pub struct IsoInput<'a> {
     /// pre-existing partitions at all — see [`Plan::authorized_destructive`].
     pub edits: Vec<super::disks::DiskOp>,
     pub ai_features: AiFeatures,
+    pub android_apps: AndroidApps,
 }
 
 /// Build an install plan from the user's own choices, with no handoff payload.
@@ -1903,6 +1923,7 @@ fn synthesize_oobe(
             // the user did not explicitly delete in the editor.
             keep_windows: true,
             ai_features: input.ai_features,
+            android_apps: input.android_apps,
         },
         target: crate::oobe::Target {
             esp_partuuid: esp.partuuid.clone(),
@@ -1994,6 +2015,7 @@ mod tests {
                 root_filesystem: RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
+                android_apps: crate::oobe::AndroidApps::Disabled,
             },
             target: Target {
                 esp_partuuid: ESP_PARTUUID.to_owned(),
@@ -2847,9 +2869,12 @@ mod tests {
             edits: Vec::new(),
             accelerators: Vec::new(),
             ai_features: AiFeatures::Disabled,
+            android_apps: AndroidApps::Disabled,
+            android_available: true,
         };
         edit(&mut target);
         snapshot.accelerators = target.accelerators;
+        snapshot.android_available = target.android_available;
         snapshot.memory_bytes = target.memory_bytes;
         snapshot.microarch = target.microarch;
         snapshot.crownos_repo_key = target.crownos_repo_key;
@@ -2862,6 +2887,7 @@ mod tests {
             ids: ids(),
             edits: target.edits,
             ai_features: target.ai_features,
+            android_apps: target.android_apps,
         })
     }
 
@@ -2877,6 +2903,8 @@ mod tests {
         edits: Vec<crate::engine::disks::DiskOp>,
         accelerators: Vec<crate::util::pci::Accelerator>,
         ai_features: AiFeatures,
+        android_apps: AndroidApps,
+        android_available: bool,
     }
 
     #[test]
@@ -2943,6 +2971,75 @@ mod tests {
         .expect("a plan");
         assert!(configures_ai(&accepted));
         assert!(packages(&accepted).iter().any(|p| p == "crownos-ai-nvidia"));
+    }
+
+    #[test]
+    fn android_apps_install_the_runtime_and_only_when_asked_and_able() {
+        use crate::util::pci::{Accelerator, AcceleratorKind, AcceleratorVendor};
+        let gpu = |vendor, device_id| Accelerator {
+            vendor,
+            kind: AcceleratorKind::Gpu,
+            device_id,
+        };
+        let rtx_4050 = gpu(AcceleratorVendor::Nvidia, 0x28e1);
+        let radeon_780m = gpu(AcceleratorVendor::Amd, 0x15bf);
+        let wanted = AndroidApps::Enabled { google_play: true };
+        let plan_for = |android_apps, accelerators: Vec<Accelerator>, android_available| {
+            iso_plan_with(|target| {
+                target.android_apps = android_apps;
+                target.accelerators = accelerators;
+                target.android_available = android_available;
+            })
+            .expect("a plan")
+        };
+        let packages = |plan: &Plan| -> Vec<String> {
+            plan.steps
+                .iter()
+                .find_map(|step| match step {
+                    Step::InstallBaseSystem { packages, .. } => Some(packages.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        let installs = |plan: &Plan, package: &str| packages(plan).iter().any(|p| p == package);
+        let configured = |plan: &Plan| {
+            plan.steps.iter().find_map(|step| match step {
+                Step::ConfigureAndroid { google_play, .. } => Some(*google_play),
+                _ => None,
+            })
+        };
+
+        let declined = plan_for(AndroidApps::Disabled, vec![rtx_4050], true);
+        assert_eq!(configured(&declined), None);
+        assert!(!installs(&declined, "waydroid"));
+
+        let unable = plan_for(wanted, vec![rtx_4050], false);
+        assert_eq!(configured(&unable), None);
+        assert!(!installs(&unable, "crownos-android"));
+
+        let nvidia_only = plan_for(wanted, vec![rtx_4050], true);
+        assert_eq!(configured(&nvidia_only), Some(true));
+        for package in [
+            "waydroid",
+            "lxc",
+            "python-gbinder",
+            "libgbinder",
+            "libglibutil",
+            "dnsmasq",
+            "crownos-android",
+            "crownos-android-venus",
+        ] {
+            assert!(installs(&nvidia_only, package), "{package}");
+        }
+
+        let hybrid = plan_for(
+            AndroidApps::Enabled { google_play: false },
+            vec![radeon_780m, rtx_4050],
+            true,
+        );
+        assert_eq!(configured(&hybrid), Some(false));
+        assert!(installs(&hybrid, "crownos-android"));
+        assert!(!installs(&hybrid, "crownos-android-venus"));
     }
 
     /// The baseline: no payload, no Windows partition designated, and a boot
@@ -3027,6 +3124,7 @@ mod tests {
             ids: ids(),
             edits: Vec::new(),
             ai_features: AiFeatures::Disabled,
+            android_apps: AndroidApps::Disabled,
         })
         .expect("no ESP needed");
         assert!(plan.boot_partition.is_some());
@@ -3061,6 +3159,7 @@ mod tests {
             ids: ids(),
             edits: Vec::new(),
             ai_features: AiFeatures::Disabled,
+            android_apps: AndroidApps::Disabled,
         })
         .expect_err("MBR is refused");
         assert!(matches!(refusal, Refusal::NotGpt { .. }), "{refusal:?}");
@@ -3096,6 +3195,7 @@ mod tests {
             ids: ids(),
             edits,
             ai_features: AiFeatures::Disabled,
+            android_apps: AndroidApps::Disabled,
         };
 
         let refusal = plan_iso(&input(Vec::new())).expect_err("no table, no install");
@@ -3135,6 +3235,7 @@ mod tests {
             ids: ids(),
             edits: Vec::new(),
             ai_features: AiFeatures::Disabled,
+            android_apps: AndroidApps::Disabled,
         })
         .expect_err("a username with a space in it is refused");
         assert!(

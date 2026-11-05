@@ -1,15 +1,23 @@
 //! Either flow: the last look before anything is written.
 
 use crownui::kit::{ButtonVariant, setting_row, toggle};
-use crownui::prelude::{Cx, Listeners, Signal, Styled, View, keyed, vstack};
+use crownui::prelude::{Cx, Listeners, Semantic, Signal, Styled, View, keyed, show, vstack};
 
 use crate::engine::ai::{Backend, ai_plan};
 use crate::engine::plan::{Plan, Reclaim, bytes};
-use crate::oobe::AiFeatures;
+use crate::oobe::{AiFeatures, AndroidApps};
 use crate::ui::Wizard;
 use crate::ui::components::{Status, Tone, alert, note, pill, stage_row, surface};
-use crate::ui::layout::{BLOCK_GAP, PageParts, back_pill, caption, tiles};
+use crate::ui::layout::{BLOCK_GAP, PageParts, back_pill, caption, nothing, tiles};
 use crate::util::mirror::mirror;
+
+const AI_FEATURES: &str = "AI features";
+const ANDROID_APPS: &str = "Android apps";
+const ANDROID_SUMMARY: &str = "Runs Android apps in their own windows. About 1 GB downloads in \
+                               the background after the first start.";
+const GOOGLE_PLAY: &str = "Include Google Play";
+const GOOGLE_PLAY_SUMMARY: &str =
+    "Needs a one-time device registration. Some banking apps don't work.";
 
 pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
     let Some((plan, dry_run)) = wizard.with_untracked(cx, |wizard| {
@@ -25,7 +33,7 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
         .collect();
 
     let step_list = keyed(
-        move |runtime| wizard.with(runtime, |wizard| wizard.ai_features),
+        move |runtime| wizard.with(runtime, |wizard| (wizard.ai_features, wizard.android_apps)),
         move |cx, _| {
             let step_rows = wizard
                 .with_untracked(cx, |wizard| wizard.plan().cloned())
@@ -36,6 +44,7 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
     let content = vstack((
         point_of_no_return(&plan, dry_run),
         ai_features(cx, wizard),
+        android_apps(cx, wizard),
         step_list,
         vstack(warnings).gap(BLOCK_GAP),
         note(Tone::Info, reclaim(&plan)),
@@ -120,8 +129,53 @@ fn ai_features(cx: &mut Cx, wizard: Signal<Wizard>) -> Option<impl View + use<>>
             .unwrap_or_default()
     });
     Some(surface((
-        setting_row("AI features", toggle(enabled)),
+        setting_row(AI_FEATURES, toggle(enabled).label(AI_FEATURES)),
         caption(ai_summary(&backends)),
+    )))
+}
+
+/// The switches for Android apps. Absent when this machine cannot run them or
+/// the live image does not bundle them.
+fn android_apps(cx: &mut Cx, wizard: Signal<Wizard>) -> Option<impl View + use<>> {
+    let available = wizard.with_untracked(cx, |wizard| {
+        wizard
+            .context()
+            .is_some_and(|context| context.snapshot.android_available)
+    });
+    if !available {
+        return None;
+    }
+    let enabled = mirror(
+        cx,
+        wizard,
+        |wizard| wizard.android_apps != AndroidApps::Disabled,
+        |wizard, enabled| {
+            wizard.set_android_apps(if enabled {
+                AndroidApps::Enabled { google_play: true }
+            } else {
+                AndroidApps::Disabled
+            });
+        },
+    );
+    let google_play = mirror(
+        cx,
+        wizard,
+        |wizard| wizard.android_apps == AndroidApps::Enabled { google_play: true },
+        |wizard, google_play| {
+            if wizard.android_apps != AndroidApps::Disabled {
+                wizard.set_android_apps(AndroidApps::Enabled { google_play });
+            }
+        },
+    );
+    Some(surface((
+        setting_row(ANDROID_APPS, toggle(enabled).label(ANDROID_APPS)),
+        caption(ANDROID_SUMMARY),
+        show(
+            enabled,
+            move || setting_row(GOOGLE_PLAY, toggle(google_play).label(GOOGLE_PLAY)),
+            nothing,
+        ),
+        show(enabled, || caption(GOOGLE_PLAY_SUMMARY), nothing),
     )))
 }
 

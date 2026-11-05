@@ -44,6 +44,7 @@ use crate::util::meminfo;
 use crate::util::pci::{self, Accelerator};
 
 use super::ai::CPU_META;
+use super::android::{self, ANDROID_PACKAGE};
 use super::base::{OFFLINE_PACMAN_CONF, REPO_KEY_LIVE_PATH};
 
 /// Where archiso mounts the medium it booted from.
@@ -183,6 +184,9 @@ pub struct SystemSnapshot {
     /// Whether the live image's offline repository carries the AI packages. An
     /// image built without them cannot offer AI features.
     pub ai_bundled: bool,
+    /// Whether this kernel and CPU can run Android and the live image bundles
+    /// the packages for it. Android apps are only offered when they can.
+    pub android_available: bool,
 }
 
 impl SystemSnapshot {
@@ -464,13 +468,25 @@ pub fn probe(system: &dyn System) -> Result<SystemSnapshot> {
         microarch,
         crownos_repo_key: system.exists(REPO_KEY_LIVE_PATH),
         accelerators: read_accelerators(system),
-        ai_bundled: system
-            .run(
-                "pacman",
-                &["--config", OFFLINE_PACMAN_CONF, "-Sp", CPU_META],
-            )
-            .is_ok(),
+        ai_bundled: bundles(system, CPU_META),
+        android_available: runs_android(system) && bundles(system, ANDROID_PACKAGE),
     })
+}
+
+/// Whether the live image's offline repository can install `package`.
+fn bundles(system: &dyn System, package: &str) -> bool {
+    system
+        .run("pacman", &["--config", OFFLINE_PACMAN_CONF, "-Sp", package])
+        .is_ok()
+}
+
+/// Whether this kernel's page size and this CPU are ones Android runs on. An
+/// unreadable page size is not offered Android rather than offered a setup
+/// that fails after the first boot.
+fn runs_android(system: &dyn System) -> bool {
+    system
+        .run("getconf", &["PAGESIZE"])
+        .is_ok_and(|page_size| android::host_runs_android(std::env::consts::ARCH, &page_size))
 }
 
 /// The machine's GPUs and NPUs. An unreadable bus is no accelerators, which
@@ -1074,6 +1090,11 @@ pub(crate) mod fixture {
                 "file:///var/cache/crownos/mirror/crownos-ai-cpu-0.1.0-1-any.pkg.tar.zst",
             )
             .with_command(
+                "pacman --config /etc/pacman.d/crownos-offline.conf -Sp crownos-android",
+                "file:///var/cache/crownos/mirror/crownos-android-0.1.0-1-x86_64.pkg.tar.zst",
+            )
+            .with_command("getconf PAGESIZE", "4096\n")
+            .with_command(
                 "findmnt --json --list --output SOURCE,TARGET,FSTYPE",
                 findmnt,
             )
@@ -1317,5 +1338,19 @@ mod tests {
         assert_eq!(gpt_usable_range(1_000, 512), Some((34, 966)));
         assert_eq!(gpt_usable_range(1_000, 4096), Some((6, 994)));
         assert_eq!(gpt_usable_range(60, 512), None);
+    }
+
+    #[test]
+    fn android_is_offered_only_on_4k_pages_with_the_packages_bundled() {
+        let available = |system: &FakeSystem| probe(system).expect("probe").android_available;
+        let standard = || machine(FINDMNT_JSON_IN_RAM);
+        assert!(available(&standard()));
+        assert!(!available(
+            &standard().with_command("getconf PAGESIZE", "16384\n")
+        ));
+        assert!(!available(&blank_machine(
+            FINDMNT_JSON_IN_RAM,
+            BLANK_LSBLK_JSON
+        )));
     }
 }

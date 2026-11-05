@@ -11,7 +11,7 @@ use super::editor::Row;
 use super::palette::oobe_theme;
 use super::root::shell;
 use super::tests::{iso_context, payload_context, sign_in};
-use super::{Blocker, MIN_WINDOW_SIZE, Page, WINDOW_SIZE, Wizard};
+use super::{Blocker, Context, MIN_WINDOW_SIZE, Page, WINDOW_SIZE, Wizard};
 use crate::engine::exec::{Event, Mode};
 use crate::engine::plan::bytes;
 use crate::network::{AccessPoint, Snapshot};
@@ -554,8 +554,44 @@ fn the_ai_switch_adds_the_acceleration_step_to_the_plan() {
     let mut app = window(wizard);
     let ai_step = role(Role::ListItem).name("Setting up AI acceleration");
     assert!(!app.exists(ai_step.clone()));
-    app.click(role(Role::Switch)).settle();
+    app.click(role(Role::Switch).name("AI features")).settle();
     assert!(app.exists(ai_step));
+}
+
+fn confirming(context: Context) -> TestApp {
+    let mut wizard = on(Wizard::ready(context, Mode::Commit), Page::Account);
+    sign_in(&mut wizard);
+    wizard.go(Page::Confirm);
+    window(wizard)
+}
+
+#[test]
+fn the_android_switch_adds_the_setup_step_and_offers_google_play() {
+    let mut app = confirming(payload_context(None, false));
+    let android_step = role(Role::ListItem).name("Setting up Android apps");
+    let google_play = role(Role::Switch).name("Include Google Play");
+    assert!(!app.exists(android_step.clone()));
+    assert!(!app.exists(google_play.clone()));
+
+    app.click(role(Role::Switch).name("Android apps")).settle();
+    assert!(app.exists(android_step.clone()));
+    assert_eq!(app.find(google_play.clone()).states.checked, Some(true));
+    app.click(google_play.clone()).settle();
+    assert_eq!(app.find(google_play.clone()).states.checked, Some(false));
+    assert!(app.exists(android_step.clone()));
+
+    app.click(role(Role::Switch).name("Android apps")).settle();
+    assert!(!app.exists(android_step));
+    assert!(!app.exists(google_play));
+}
+
+#[test]
+fn android_apps_are_not_offered_where_android_cannot_run() {
+    let mut context = payload_context(None, false);
+    context.snapshot.android_available = false;
+    let mut app = confirming(context);
+    assert!(!app.exists(role(Role::Switch).name("Android apps")));
+    assert!(app.exists(role(Role::Switch).name("AI features")));
 }
 
 #[test]

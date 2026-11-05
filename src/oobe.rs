@@ -129,6 +129,10 @@ pub struct Install {
     /// before the option existed, which means it was never offered.
     #[serde(default, skip_serializing_if = "AiFeatures::is_disabled")]
     pub ai_features: AiFeatures,
+    /// Whether to set up Android apps. Absent in payloads written before the
+    /// option existed, which means it was never offered.
+    #[serde(default, skip_serializing_if = "AndroidApps::is_disabled")]
+    pub android_apps: AndroidApps,
 }
 
 /// Whether the hardware-accelerated AI stack is installed.
@@ -141,6 +145,22 @@ pub enum AiFeatures {
 }
 
 impl AiFeatures {
+    fn is_disabled(&self) -> bool {
+        *self == Self::Disabled
+    }
+}
+
+/// Whether Android apps run on the installed system, and from which image.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AndroidApps {
+    #[default]
+    Disabled,
+    /// `google_play` picks the image that ships Google Play.
+    Enabled { google_play: bool },
+}
+
+impl AndroidApps {
     fn is_disabled(&self) -> bool {
         *self == Self::Disabled
     }
@@ -363,6 +383,7 @@ mod tests {
                 root_filesystem: RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
+                android_apps: crate::oobe::AndroidApps::Disabled,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -417,6 +438,22 @@ mod tests {
         original.user = None;
         let json = original.to_json().expect("serialize");
         assert_eq!(Oobe::from_json(&json).expect("deserialize"), original);
+    }
+
+    /// Disabled is left out, so the golden shape below is a payload from before
+    /// the option existed; enabled names the image.
+    #[test]
+    fn android_apps_are_written_only_when_chosen() {
+        let mut original = sample();
+        original.install.android_apps = AndroidApps::Enabled { google_play: true };
+        let json: serde_json::Value =
+            serde_json::from_str(&original.to_json().expect("serialize")).expect("valid json");
+        assert_eq!(
+            json["install"]["android_apps"],
+            serde_json::json!({ "enabled": { "google_play": true } })
+        );
+        let parsed: Oobe = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(parsed, original);
     }
 
     /// Newer payloads are refused, older ones accepted. The Linux side depends

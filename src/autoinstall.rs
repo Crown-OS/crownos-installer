@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::engine::exec::{Event, Mode, Secrets, execute};
 use crate::engine::plan::{Account, IsoInput, Plan, Step, plan_iso};
 use crate::engine::probe::RealSystem;
-use crate::oobe::{AiFeatures, Locale};
+use crate::oobe::{AiFeatures, AndroidApps, Locale};
 use crate::ui;
 
 /// The line a successful run ends with, which the install test waits for.
@@ -30,6 +30,8 @@ pub struct Config {
     pub kernel_args: String,
     #[serde(default)]
     pub ai_features: AiFeatures,
+    #[serde(default)]
+    pub android_apps: AndroidApps,
 }
 
 impl Config {
@@ -69,6 +71,7 @@ fn plan_for(context: &ui::Context, config: &Config) -> Result<Plan> {
         ids: context.ids.clone(),
         edits: Vec::new(),
         ai_features: config.ai_features,
+        android_apps: config.android_apps,
     })
     .context("the install was refused")
 }
@@ -108,6 +111,20 @@ mod tests {
             serde_json::from_str(r#"{"username":"crown","password":"pw","hostname":"box"}"#)
                 .expect("a minimal config parses");
         assert!(config.kernel_args.is_empty());
+        assert_eq!(config.android_apps, AndroidApps::Disabled);
+    }
+
+    #[test]
+    fn android_apps_are_chosen_with_or_without_google_play() {
+        let config: Config = serde_json::from_str(
+            r#"{"username":"crown","password":"pw","hostname":"box",
+                "android_apps":{"enabled":{"google_play":false}}}"#,
+        )
+        .expect("an Android config parses");
+        assert_eq!(
+            config.android_apps,
+            AndroidApps::Enabled { google_play: false }
+        );
     }
 
     #[test]

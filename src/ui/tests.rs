@@ -10,9 +10,9 @@ use super::progress::LOG_LIMIT;
 use super::*;
 use crate::engine::disks::DiskOp;
 use crate::engine::exec::{Event, Mode};
-use crate::engine::plan::{NewIds, Refusal};
+use crate::engine::plan::{NewIds, Refusal, Step};
 use crate::engine::probe::{self, fixture};
-use crate::oobe::Oobe;
+use crate::oobe::{AndroidApps, Oobe};
 use crate::oobe::{
     Install, Locale, RootFilesystem, Staging, StagingKind, SwapPlan, Target as OobeTarget,
     UserAccount,
@@ -36,6 +36,7 @@ pub(super) fn payload_context(user: Option<UserAccount>, auto_install: bool) -> 
             root_filesystem: RootFilesystem::Ext4,
             keep_windows: true,
             ai_features: crate::oobe::AiFeatures::Disabled,
+            android_apps: crate::oobe::AndroidApps::Disabled,
         },
         target: OobeTarget {
             esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -660,6 +661,32 @@ fn a_startup_failure_blocks_the_wizard() {
     );
     assert_eq!(app.page, Page::Blocked);
     assert!(app.plan().is_none());
+}
+
+/// The Windows flow's payload gives the starting answer and the confirmation
+/// page can still change it.
+#[test]
+fn the_payloads_android_choice_reaches_the_plan_until_changed() {
+    let mut context = payload_context(None, false);
+    if let Provenance::WindowsInstaller { oobe, .. } = &mut context.provenance {
+        oobe.install.android_apps = AndroidApps::Enabled { google_play: false };
+    }
+    let mut wizard = Wizard::ready(context, Mode::Commit);
+    sign_in(&mut wizard);
+    let configures = |wizard: &Wizard| {
+        wizard
+            .plan()
+            .expect("a plan")
+            .steps
+            .iter()
+            .find_map(|step| match step {
+                Step::ConfigureAndroid { google_play, .. } => Some(*google_play),
+                _ => None,
+            })
+    };
+    assert_eq!(configures(&wizard), Some(false));
+    wizard.set_android_apps(AndroidApps::Disabled);
+    assert_eq!(configures(&wizard), None);
 }
 
 impl Context {

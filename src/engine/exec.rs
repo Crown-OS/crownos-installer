@@ -37,6 +37,7 @@ use anyhow::{Context as _, Result};
 
 use crate::oobe::RootFilesystem;
 
+use super::android;
 use super::base::{self, BOOT_ENTRY};
 use super::disks::{self, Filesystem};
 use super::plan::{BOOT_FSLABEL, ESP_FALLBACK_LOADER, Plan, Role, Step};
@@ -507,6 +508,8 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
 
         Step::ConfigureAiAcceleration { root, plan } => plan.commands(root),
 
+        Step::ConfigureAndroid { root, google_play } => android::commands(root, *google_play),
+
         Step::ConfigureRepositories { root, microarch } => {
             vec![base::configure_repositories(root, *microarch)]
         }
@@ -773,7 +776,9 @@ mod tests {
     use super::*;
     use crate::engine::plan::{self, Account, NewIds, PlanInput, Reclaim};
     use crate::engine::probe::{self, fixture};
-    use crate::oobe::{Install, Locale, Oobe, Staging, StagingKind, SwapPlan, Target, UserAccount};
+    use crate::oobe::{
+        AndroidApps, Install, Locale, Oobe, Staging, StagingKind, SwapPlan, Target, UserAccount,
+    };
 
     const SECRET: &str = "correct-horse-battery-staple";
 
@@ -784,6 +789,10 @@ mod tests {
     }
 
     fn a_plan() -> Plan {
+        a_plan_with(AndroidApps::Disabled)
+    }
+
+    fn a_plan_with(android_apps: AndroidApps) -> Plan {
         let snapshot =
             probe::probe(&fixture::machine(fixture::FINDMNT_JSON_IN_RAM)).expect("probe");
         let disk = &snapshot.disks[0];
@@ -802,6 +811,7 @@ mod tests {
                 root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
+                android_apps,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -862,6 +872,25 @@ mod tests {
             system.journal()
         );
         log.join("\n")
+    }
+
+    /// What `--print-plan` and the install log show for Android apps: the
+    /// packages first, then the choice, the marker and both units in the new
+    /// root.
+    #[test]
+    fn a_dry_run_of_an_android_install_arms_its_setup_after_the_packages() {
+        let log = dry_run_log(&a_plan_with(AndroidApps::Enabled { google_play: true }));
+        let pacstrap = log.find("$ pacstrap").expect("pacstrap");
+        let marker = log
+            .find("$ touch /mnt/var/lib/crownos/android/pending")
+            .expect("the pending marker");
+        assert!(pacstrap < marker);
+        assert!(log[pacstrap..marker].contains(" waydroid "));
+        assert!(log.contains("cat > /mnt/etc/crownos/android.ron"));
+        assert!(log.contains("    google_play: true,"));
+        assert!(log.contains("$ arch-chroot /mnt systemctl enable crownos-android-setup.service"));
+        assert!(log.contains("$ arch-chroot /mnt systemctl --global enable crown-androidd.socket"));
+        assert!(!dry_run_log(&a_plan()).contains("crownos-android"));
     }
 
     #[test]
@@ -1195,6 +1224,7 @@ mod tests {
                 root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
+                android_apps: crate::oobe::AndroidApps::Disabled,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),

@@ -7,7 +7,7 @@ use crate::engine::exec::{Event, Mode, Secrets};
 use crate::engine::plan::{IsoInput, Plan, PlanInput, Refusal, plan, plan_iso};
 use crate::engine::probe::Disk;
 use crate::network::Network;
-use crate::oobe::AiFeatures;
+use crate::oobe::{AiFeatures, AndroidApps};
 use crate::provenance::Provenance;
 
 use super::editor::{PartitionAction, Row};
@@ -37,6 +37,9 @@ pub struct Wizard {
     /// Whether the ISO flow sets up AI acceleration. The Windows flow's payload
     /// carries its own answer.
     pub ai_features: AiFeatures,
+    /// Whether Android apps are set up, in either flow: the Windows flow's
+    /// payload gives the starting answer and the confirmation page can change it.
+    pub android_apps: AndroidApps,
     /// The plan as of the last time something that matters changed. Recomputed
     /// rather than derived per frame, so the confirmation page is showing the
     /// same value the install will run.
@@ -67,15 +70,16 @@ impl Wizard {
             Some(oobe) => Target::from_payload(oobe, &context.snapshot),
             None => Target::best_for(&context.snapshot),
         };
-        let ai_features = context
+        let (ai_features, android_apps) = context
             .oobe()
-            .map(|oobe| oobe.install.ai_features)
+            .map(|oobe| (oobe.install.ai_features, oobe.install.android_apps))
             .unwrap_or_default();
         let mut wizard = Self {
             page,
             form,
             target,
             ai_features,
+            android_apps,
             ..Self::blocked_on(Ok(context), mode)
         };
         wizard.restage_plan();
@@ -110,6 +114,7 @@ impl Wizard {
             editor: Editor::default(),
             editor_return: None,
             ai_features: AiFeatures::default(),
+            android_apps: AndroidApps::default(),
             staged: None,
             progress: InstallProgress::default(),
             mode,
@@ -254,6 +259,7 @@ impl Wizard {
             Provenance::WindowsInstaller { oobe, .. } => {
                 let mut oobe = oobe.clone();
                 oobe.install.ai_features = self.ai_features;
+                oobe.install.android_apps = self.android_apps;
                 plan(&PlanInput {
                     oobe: &oobe,
                     snapshot: &context.snapshot,
@@ -267,6 +273,11 @@ impl Wizard {
 
     pub fn set_ai_features(&mut self, ai_features: AiFeatures) {
         self.ai_features = ai_features;
+        self.restage_plan();
+    }
+
+    pub fn set_android_apps(&mut self, android_apps: AndroidApps) {
+        self.android_apps = android_apps;
         self.restage_plan();
     }
 
@@ -293,6 +304,7 @@ impl Wizard {
             ids: context.ids.clone(),
             edits: self.editor.ops.clone(),
             ai_features: self.ai_features,
+            android_apps: self.android_apps,
         })
     }
 

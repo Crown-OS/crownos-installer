@@ -30,6 +30,7 @@
 //! vector either. See [`exec::Cmd`].
 
 pub mod ai;
+pub mod android;
 pub mod base;
 pub mod disks;
 pub mod exec;
