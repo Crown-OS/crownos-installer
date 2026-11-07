@@ -59,7 +59,9 @@
 
 use std::fmt;
 
-use crate::oobe::{AiFeatures, Locale, Oobe, RootFilesystem, StagingKind, SwapPlan, UserAccount};
+use crate::oobe::{
+    AiFeatures, Locale, Oobe, RootFilesystem, StagingKind, SwapPlan, UserAccount, WindowsApps,
+};
 use crate::util::cpuinfo::Microarch;
 
 use super::ai::{self, AiPlan};
@@ -1555,9 +1557,16 @@ fn system_steps(
             plan,
         });
     }
+    let windows_apps =
+        (oobe.install.windows_apps == WindowsApps::Enabled).then_some(base::WINDOWS_APPS_SERVICE);
     steps.push(Step::EnableServices {
         root,
-        units: base::SERVICES.iter().map(|&unit| unit.to_owned()).collect(),
+        units: base::SERVICES
+            .iter()
+            .copied()
+            .chain(windows_apps)
+            .map(str::to_owned)
+            .collect(),
     });
     steps
 }
@@ -1679,6 +1688,7 @@ pub struct IsoInput<'a> {
     /// pre-existing partitions at all — see [`Plan::authorized_destructive`].
     pub edits: Vec<super::disks::DiskOp>,
     pub ai_features: AiFeatures,
+    pub windows_apps: WindowsApps,
 }
 
 /// Build an install plan from the user's own choices, with no handoff payload.
@@ -1903,6 +1913,7 @@ fn synthesize_oobe(
             // the user did not explicitly delete in the editor.
             keep_windows: true,
             ai_features: input.ai_features,
+            windows_apps: input.windows_apps,
         },
         target: crate::oobe::Target {
             esp_partuuid: esp.partuuid.clone(),
@@ -1994,6 +2005,7 @@ mod tests {
                 root_filesystem: RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
+                windows_apps: crate::oobe::WindowsApps::Disabled,
             },
             target: Target {
                 esp_partuuid: ESP_PARTUUID.to_owned(),
@@ -2847,6 +2859,7 @@ mod tests {
             edits: Vec::new(),
             accelerators: Vec::new(),
             ai_features: AiFeatures::Disabled,
+            windows_apps: WindowsApps::Disabled,
         };
         edit(&mut target);
         snapshot.accelerators = target.accelerators;
@@ -2862,6 +2875,7 @@ mod tests {
             ids: ids(),
             edits: target.edits,
             ai_features: target.ai_features,
+            windows_apps: target.windows_apps,
         })
     }
 
@@ -2877,6 +2891,7 @@ mod tests {
         edits: Vec<crate::engine::disks::DiskOp>,
         accelerators: Vec<crate::util::pci::Accelerator>,
         ai_features: AiFeatures,
+        windows_apps: WindowsApps,
     }
 
     #[test]
@@ -2943,6 +2958,22 @@ mod tests {
         .expect("a plan");
         assert!(configures_ai(&accepted));
         assert!(packages(&accepted).iter().any(|p| p == "crownos-ai-nvidia"));
+    }
+
+    #[test]
+    fn windows_apps_enable_the_first_boot_setup_only_when_asked() {
+        let enables_it = |plan: Plan| {
+            plan.steps.iter().any(|step| match step {
+                Step::EnableServices { units, .. } => {
+                    units.iter().any(|unit| unit == base::WINDOWS_APPS_SERVICE)
+                }
+                _ => false,
+            })
+        };
+        assert!(!enables_it(iso_plan_with(|_| {}).expect("a plan")));
+        assert!(enables_it(
+            iso_plan_with(|target| target.windows_apps = WindowsApps::Enabled).expect("a plan")
+        ));
     }
 
     /// The baseline: no payload, no Windows partition designated, and a boot
@@ -3027,6 +3058,7 @@ mod tests {
             ids: ids(),
             edits: Vec::new(),
             ai_features: AiFeatures::Disabled,
+            windows_apps: WindowsApps::Disabled,
         })
         .expect("no ESP needed");
         assert!(plan.boot_partition.is_some());
@@ -3061,6 +3093,7 @@ mod tests {
             ids: ids(),
             edits: Vec::new(),
             ai_features: AiFeatures::Disabled,
+            windows_apps: WindowsApps::Disabled,
         })
         .expect_err("MBR is refused");
         assert!(matches!(refusal, Refusal::NotGpt { .. }), "{refusal:?}");
@@ -3096,6 +3129,7 @@ mod tests {
             ids: ids(),
             edits,
             ai_features: AiFeatures::Disabled,
+            windows_apps: WindowsApps::Disabled,
         };
 
         let refusal = plan_iso(&input(Vec::new())).expect_err("no table, no install");
@@ -3135,6 +3169,7 @@ mod tests {
             ids: ids(),
             edits: Vec::new(),
             ai_features: AiFeatures::Disabled,
+            windows_apps: WindowsApps::Disabled,
         })
         .expect_err("a username with a space in it is refused");
         assert!(

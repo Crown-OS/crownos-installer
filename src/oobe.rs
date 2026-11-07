@@ -129,6 +129,10 @@ pub struct Install {
     /// before the option existed, which means it was never offered.
     #[serde(default, skip_serializing_if = "AiFeatures::is_disabled")]
     pub ai_features: AiFeatures,
+    /// Whether Wine is set up on the new system's first boot that is online.
+    /// Absent in payloads written before the option existed.
+    #[serde(default, skip_serializing_if = "WindowsApps::is_disabled")]
+    pub windows_apps: WindowsApps,
 }
 
 /// Whether the hardware-accelerated AI stack is installed.
@@ -141,6 +145,21 @@ pub enum AiFeatures {
 }
 
 impl AiFeatures {
+    fn is_disabled(&self) -> bool {
+        *self == Self::Disabled
+    }
+}
+
+/// Whether Windows programs run on the installed system.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsApps {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+impl WindowsApps {
     fn is_disabled(&self) -> bool {
         *self == Self::Disabled
     }
@@ -363,6 +382,7 @@ mod tests {
                 root_filesystem: RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
+                windows_apps: crate::oobe::WindowsApps::Disabled,
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),

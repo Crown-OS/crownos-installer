@@ -145,6 +145,7 @@ fn every_page() -> Vec<(&'static str, Wizard)> {
         ("Where should CrownOS go?", on(iso_wizard(), Page::Space)),
         ("Partition editor", editing()),
         ("Let's get you started", on(payload_wizard(), Page::Account)),
+        ("Apps from other systems", on(iso_wizard(), Page::Apps)),
         ("Ready to install", confirming),
         ("Installing CrownOS", committed()),
         ("You're all set", finished),
@@ -229,6 +230,7 @@ fn every_action_row_sits_on_the_card_at_the_smallest_window() {
         (on(iso_wizard(), Page::Space), "Next"),
         (editing(), "Done"),
         (on(payload_wizard(), Page::Account), "Next"),
+        (on(iso_wizard(), Page::Apps), "Next"),
         (
             {
                 let mut wizard = on(payload_wizard(), Page::Account);
@@ -270,16 +272,16 @@ fn every_action_row_sits_on_the_card_at_the_smallest_window() {
 #[test]
 fn the_step_track_follows_the_flow() {
     let mut app = window(iso_wizard());
-    assert_eq!(step(&mut app), "Step 2 of 6");
+    assert_eq!(step(&mut app), "Step 2 of 7");
     press(&mut app, "Next");
-    assert_eq!(step(&mut app), "Step 3 of 6");
+    assert_eq!(step(&mut app), "Step 3 of 7");
     press(&mut app, "Next");
-    assert_eq!(step(&mut app), "Step 4 of 6");
+    assert_eq!(step(&mut app), "Step 4 of 7");
     press(&mut app, "Back");
-    assert_eq!(step(&mut app), "Step 3 of 6");
+    assert_eq!(step(&mut app), "Step 3 of 7");
 
     let mut app = window(on(payload_wizard(), Page::Done));
-    assert_eq!(step(&mut app), "All 5 steps complete");
+    assert_eq!(step(&mut app), "All 6 steps complete");
 }
 
 #[test]
@@ -329,7 +331,7 @@ fn installing_from_the_intro_opens_the_first_step_and_back_returns_to_it() {
     let mut app = window(intro());
     press(&mut app, "Install");
     assert!(showing(&mut app, "Choose a disk"));
-    assert_eq!(step(&mut app), "Step 2 of 6");
+    assert_eq!(step(&mut app), "Step 2 of 7");
     press(&mut app, "Back");
     press(&mut app, "Back");
     assert!(showing(&mut app, "Welcome to CrownOS"));
@@ -374,7 +376,7 @@ fn the_partition_editor_opens_from_welcome_and_returns_to_it() {
     assert!(showing(&mut app, "Partition editor"));
     assert_eq!(
         step(&mut app),
-        "Step 1 of 5",
+        "Step 1 of 6",
         "the editor does not move the track"
     );
     press(&mut app, "Done");
@@ -447,6 +449,8 @@ fn the_space_page_shows_the_automatic_layout_and_it_reaches_the_plan() {
     ));
     press(&mut app, "Next");
     press(&mut app, "Next");
+    assert!(showing(&mut app, "Apps from other systems"));
+    press(&mut app, "Next");
     assert!(showing(&mut app, "Ready to install"));
     assert!(app.exists(role(Role::ListItem).name("Creating the boot partition")));
     assert!(app.exists(role(Role::ListItem).name("Formatting as btrfs")));
@@ -503,7 +507,7 @@ fn a_queued_partition_says_nothing_is_written_yet() {
 /// Typing reaches the wizard and the gate follows it. The password is filled in
 /// on the model: test actions may not type into a secure field.
 #[test]
-fn typing_the_missing_username_opens_the_confirmation() {
+fn typing_the_missing_username_moves_on_to_the_apps_page() {
     let mut wizard = on(iso_wizard(), Page::Account);
     sign_in(&mut wizard);
     wizard.form.username.clear();
@@ -516,7 +520,7 @@ fn typing_the_missing_username_opens_the_confirmation() {
     assert!(!disabled(&mut app, "Next"));
 
     press(&mut app, "Next");
-    assert!(showing(&mut app, "Ready to install"));
+    assert!(showing(&mut app, "Apps from other systems"));
 }
 
 #[test]

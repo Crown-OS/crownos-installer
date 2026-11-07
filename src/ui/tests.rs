@@ -8,14 +8,15 @@
 use super::page::{ISO_STEPS, WINDOWS_STEPS};
 use super::progress::LOG_LIMIT;
 use super::*;
+use crate::engine::base::WINDOWS_APPS_SERVICE;
 use crate::engine::disks::DiskOp;
 use crate::engine::exec::{Event, Mode};
-use crate::engine::plan::{NewIds, Refusal};
+use crate::engine::plan::{NewIds, Refusal, Step};
 use crate::engine::probe::{self, fixture};
 use crate::oobe::Oobe;
 use crate::oobe::{
     Install, Locale, RootFilesystem, Staging, StagingKind, SwapPlan, Target as OobeTarget,
-    UserAccount,
+    UserAccount, WindowsApps,
 };
 use crate::provenance::Provenance;
 
@@ -36,6 +37,7 @@ pub(super) fn payload_context(user: Option<UserAccount>, auto_install: bool) -> 
             root_filesystem: RootFilesystem::Ext4,
             keep_windows: true,
             ai_features: crate::oobe::AiFeatures::Disabled,
+            windows_apps: crate::oobe::WindowsApps::Disabled,
         },
         target: OobeTarget {
             esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -224,6 +226,31 @@ fn each_flow_walks_its_own_pages() {
     );
 }
 
+/// Both flows ask about Windows apps between the account and the confirmation,
+/// and the answer reaches the plan the confirmation shows.
+#[test]
+fn the_apps_page_comes_before_the_confirmation_and_its_answer_reaches_the_plan() {
+    let enables_windows_apps = |wizard: &Wizard| {
+        wizard.plan().expect("a plan").steps.iter().any(|step| {
+            matches!(step, Step::EnableServices { units, .. }
+                if units.iter().any(|unit| unit == WINDOWS_APPS_SERVICE))
+        })
+    };
+    for context in [iso_context(), payload_context(Some(prefilled()), false)] {
+        let mut wizard = Wizard::ready(context, Mode::Commit);
+        sign_in(&mut wizard);
+        wizard.go(Page::Account);
+        wizard.submit_account();
+        assert_eq!(wizard.page, Page::Apps);
+        assert_eq!(wizard.previous_page(), Some(Page::Account));
+        assert_eq!(wizard.next_page(), Some(Page::Confirm));
+        assert!(!enables_windows_apps(&wizard));
+
+        wizard.set_windows_apps(WindowsApps::Enabled);
+        assert!(enables_windows_apps(&wizard));
+    }
+}
+
 /// Offline, both flows stop at the network step, and walk on from it to the
 /// step they would otherwise have reached.
 #[test]
@@ -320,6 +347,7 @@ fn every_page_maps_to_a_step_in_both_flows() {
             Page::Space,
             Page::Partitions,
             Page::Account,
+            Page::Apps,
             Page::Confirm,
             Page::Progress,
             Page::Done,

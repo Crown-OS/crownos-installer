@@ -7,7 +7,7 @@ use crate::engine::exec::{Event, Mode, Secrets};
 use crate::engine::plan::{IsoInput, Plan, PlanInput, Refusal, plan, plan_iso};
 use crate::engine::probe::Disk;
 use crate::network::Network;
-use crate::oobe::AiFeatures;
+use crate::oobe::{AiFeatures, WindowsApps};
 use crate::provenance::Provenance;
 
 use super::editor::{PartitionAction, Row};
@@ -37,6 +37,8 @@ pub struct Wizard {
     /// Whether the ISO flow sets up AI acceleration. The Windows flow's payload
     /// carries its own answer.
     pub ai_features: AiFeatures,
+    /// Whether the new system sets up Wine on its first boot that is online.
+    pub windows_apps: WindowsApps,
     /// The plan as of the last time something that matters changed. Recomputed
     /// rather than derived per frame, so the confirmation page is showing the
     /// same value the install will run.
@@ -71,11 +73,16 @@ impl Wizard {
             .oobe()
             .map(|oobe| oobe.install.ai_features)
             .unwrap_or_default();
+        let windows_apps = context
+            .oobe()
+            .map(|oobe| oobe.install.windows_apps)
+            .unwrap_or_default();
         let mut wizard = Self {
             page,
             form,
             target,
             ai_features,
+            windows_apps,
             ..Self::blocked_on(Ok(context), mode)
         };
         wizard.restage_plan();
@@ -110,6 +117,7 @@ impl Wizard {
             editor: Editor::default(),
             editor_return: None,
             ai_features: AiFeatures::default(),
+            windows_apps: WindowsApps::default(),
             staged: None,
             progress: InstallProgress::default(),
             mode,
@@ -254,6 +262,7 @@ impl Wizard {
             Provenance::WindowsInstaller { oobe, .. } => {
                 let mut oobe = oobe.clone();
                 oobe.install.ai_features = self.ai_features;
+                oobe.install.windows_apps = self.windows_apps;
                 plan(&PlanInput {
                     oobe: &oobe,
                     snapshot: &context.snapshot,
@@ -267,6 +276,11 @@ impl Wizard {
 
     pub fn set_ai_features(&mut self, ai_features: AiFeatures) {
         self.ai_features = ai_features;
+        self.restage_plan();
+    }
+
+    pub fn set_windows_apps(&mut self, windows_apps: WindowsApps) {
+        self.windows_apps = windows_apps;
         self.restage_plan();
     }
 
@@ -293,6 +307,7 @@ impl Wizard {
             ids: context.ids.clone(),
             edits: self.editor.ops.clone(),
             ai_features: self.ai_features,
+            windows_apps: self.windows_apps,
         })
     }
 
@@ -351,7 +366,8 @@ impl Wizard {
             (Page::Network, false) => Page::Account,
             (Page::Disk, true) => Page::Space,
             (Page::Space, true) => Page::Account,
-            (Page::Account, _) => Page::Confirm,
+            (Page::Account, _) => Page::Apps,
+            (Page::Apps, _) => Page::Confirm,
             _ => return None,
         })
     }
@@ -368,7 +384,8 @@ impl Wizard {
             (Page::Space, true) => Page::Disk,
             (Page::Account, true) => Page::Space,
             (Page::Account, false) => self.via_network(Page::Welcome),
-            (Page::Confirm, _) => Page::Account,
+            (Page::Apps, _) => Page::Account,
+            (Page::Confirm, _) => Page::Apps,
             _ => return None,
         })
     }
@@ -430,7 +447,7 @@ impl Wizard {
         }
         self.restage_plan();
         if self.plan().is_some() {
-            self.go(Page::Confirm);
+            self.go(Page::Apps);
         }
     }
 

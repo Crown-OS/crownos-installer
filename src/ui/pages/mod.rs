@@ -6,6 +6,7 @@
 //! over the wizard signal, so typing in a field rebuilds nothing.
 
 mod account;
+mod apps;
 mod blocked;
 mod confirm;
 mod disk;
@@ -34,6 +35,7 @@ pub fn page(cx: &mut Cx, wizard: Signal<Wizard>, page: Page) -> AnyView {
         Page::Space => space::build(wizard),
         Page::Partitions => partitions::build(cx, wizard),
         Page::Account => account::build(cx, wizard),
+        Page::Apps => apps::build(cx, wizard),
         Page::Confirm => confirm::build(cx, wizard),
         Page::Progress => installing::build(cx, wizard),
         Page::Done => done::build(cx, wizard),

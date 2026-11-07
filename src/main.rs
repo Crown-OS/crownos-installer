@@ -363,6 +363,7 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>) -> ExitCode {
                 ids: context.ids.clone(),
                 edits: Vec::new(),
                 ai_features: oobe::AiFeatures::Enabled,
+                windows_apps: oobe::WindowsApps::Enabled,
             })
         }
     };

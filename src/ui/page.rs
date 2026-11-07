@@ -5,9 +5,13 @@ use crate::provenance::Provenance;
 /// The step rail's labels for an install driven by a handoff payload. One fewer
 /// than the ISO flow's: Welcome stands in for the two questions the payload
 /// already answered.
-pub const WINDOWS_STEPS: &[&str] = &["Welcome", "Network", "Account", "Confirm", "Install"];
+pub const WINDOWS_STEPS: &[&str] = &[
+    "Welcome", "Network", "Account", "Apps", "Confirm", "Install",
+];
 /// And for an install from a flashed image.
-pub const ISO_STEPS: &[&str] = &["Network", "Disk", "Space", "Account", "Confirm", "Install"];
+pub const ISO_STEPS: &[&str] = &[
+    "Network", "Disk", "Space", "Account", "Apps", "Confirm", "Install",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -24,6 +28,8 @@ pub enum Page {
     /// Either flow: the partition editor. Not a step — see the module docs.
     Partitions,
     Account,
+    /// Either flow: which apps from other systems the new install can run.
+    Apps,
     Confirm,
     Progress,
     Done,
@@ -51,16 +57,18 @@ impl Page {
                 Self::Disk => 1,
                 Self::Space => 2,
                 Self::Account => 3,
-                Self::Confirm => 4,
-                Self::Progress | Self::Done => 5,
+                Self::Apps => 4,
+                Self::Confirm => 5,
+                Self::Progress | Self::Done => 6,
             }
         } else {
             match self {
                 Self::Intro | Self::Welcome | Self::Blocked | Self::Disk | Self::Partitions => 0,
                 Self::Network => 1,
                 Self::Account | Self::Space => 2,
-                Self::Confirm => 3,
-                Self::Progress | Self::Done => 4,
+                Self::Apps => 3,
+                Self::Confirm => 4,
+                Self::Progress | Self::Done => 5,
             }
         };
         (total, index.min(total.saturating_sub(1)))
@@ -77,10 +85,11 @@ impl Page {
             Self::Space => 4,
             Self::Partitions => 5,
             Self::Account => 6,
-            Self::Confirm => 7,
-            Self::Progress => 8,
-            Self::Done => 9,
-            Self::Blocked => 10,
+            Self::Apps => 7,
+            Self::Confirm => 8,
+            Self::Progress => 9,
+            Self::Done => 10,
+            Self::Blocked => 11,
         }
     }
 

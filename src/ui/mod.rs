@@ -24,8 +24,9 @@
 //! | 2 | Network — optional | Disk — which disk to install on |
 //! | 3 | | Space — where on it, and how |
 //! | 4 | Account | Account |
-//! | 5 | Confirm | Confirm |
-//! | 6 | Install → Restart | Install → Restart |
+//! | 5 | Apps — Windows apps support | Apps — Windows apps support |
+//! | 6 | Confirm | Confirm |
+//! | 7 | Install → Restart | Install → Restart |
 //!
 //! The network step is walked past when the machine is already online at
 //! startup. [`Page::Partitions`], the partition editor, is reachable from

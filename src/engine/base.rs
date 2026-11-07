@@ -41,6 +41,9 @@ pub const ADMIN_GROUP: &str = "wheel";
 /// in on tty1 opens the desktop.
 pub const SERVICES: &[&str] = &["NetworkManager.service", "systemd-timesyncd.service"];
 
+/// Installs Wine on the first boot that is online. Shipped by [`DESKTOP_PACKAGE`].
+pub const WINDOWS_APPS_SERVICE: &str = "crownos-windows-apps.service";
+
 const AUTOLOGIN_DROP_IN: &str = "/etc/systemd/system/getty@tty1.service.d/autologin.conf";
 
 /// The kernel package, and the name of its image and initramfs.
