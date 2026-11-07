@@ -1,7 +1,8 @@
 //! The installed system's `/etc/pacman.conf`.
 //!
 //! CachyOS rebuilds come first and Arch's `core` and `extra` stay behind them
-//! for everything CachyOS does not rebuild. The live image bundles generic
+//! for everything CachyOS does not rebuild, with `multilib` last for Steam,
+//! Wine and the 32-bit graphics drivers. The live image bundles generic
 //! x86-64 packages so it installs on any CPU; on one that runs a more specific
 //! target its rebuilds are listed first, and the first `pacman -Syu` moves
 //! every package onto them, because CachyOS release numbers sort above Arch's.
@@ -71,6 +72,7 @@ pub fn pacman_conf(microarch: Microarch) -> String {
             ("cachyos", CACHYOS_MIRRORLIST),
             ("core", ARCH_MIRRORLIST),
             ("extra", ARCH_MIRRORLIST),
+            ("multilib", ARCH_MIRRORLIST),
         ])
         .map(|(repo, mirrorlist)| format!("\n[{repo}]\nInclude = {mirrorlist}\n"))
         .collect();
@@ -95,7 +97,10 @@ mod tests {
     fn a_generic_cpu_gets_generic_builds_only() {
         let conf = pacman_conf(Microarch::Generic);
         assert!(conf.contains("Architecture = x86_64\n"));
-        assert_eq!(repositories(&conf), ["cachyos", "core", "extra"]);
+        assert_eq!(
+            repositories(&conf),
+            ["cachyos", "core", "extra", "multilib"]
+        );
     }
 
     #[test]
@@ -110,7 +115,8 @@ mod tests {
                 "cachyos-extra-v3",
                 "cachyos",
                 "core",
-                "extra"
+                "extra",
+                "multilib"
             ]
         );
     }
@@ -128,7 +134,8 @@ mod tests {
                 "cachyos-extra-znver4",
                 "cachyos",
                 "core",
-                "extra"
+                "extra",
+                "multilib"
             ]
         );
     }

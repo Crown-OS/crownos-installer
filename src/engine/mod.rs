@@ -33,6 +33,7 @@ pub mod ai;
 pub mod base;
 pub mod disks;
 pub mod exec;
+pub mod graphics;
 pub mod plan;
 pub mod probe;
 pub mod repos;

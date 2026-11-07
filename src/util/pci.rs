@@ -14,6 +14,21 @@ const SIGNAL_PROCESSING_SUBCLASS: u32 = 0x1180;
 /// GPU from here on has the hardware the open kernel modules and Maxine need.
 const NVIDIA_FIRST_TURING_DEVICE: u16 = 0x1e00;
 
+/// The first Maxwell device ID (GM108), the oldest GPU NVIDIA's 580 driver
+/// branch still supports.
+const NVIDIA_FIRST_MAXWELL_DEVICE: u16 = 0x1340;
+
+/// NVIDIA GPU generations, grouped by the newest driver that supports them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NvidiaGeneration {
+    /// Kepler and older.
+    PreMaxwell,
+    /// Maxwell, Pascal and Volta.
+    MaxwellToVolta,
+    /// Turing and later.
+    TuringOrLater,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AcceleratorVendor {
     Nvidia,
@@ -36,11 +51,25 @@ pub struct Accelerator {
 }
 
 impl Accelerator {
+    pub fn is_gpu(&self) -> bool {
+        self.kind == AcceleratorKind::Gpu
+    }
+
+    /// The generation of an NVIDIA GPU, or `None` for anything else.
+    pub fn nvidia_generation(&self) -> Option<NvidiaGeneration> {
+        if self.vendor != AcceleratorVendor::Nvidia || !self.is_gpu() {
+            return None;
+        }
+        Some(match self.device_id {
+            id if id >= NVIDIA_FIRST_TURING_DEVICE => NvidiaGeneration::TuringOrLater,
+            id if id >= NVIDIA_FIRST_MAXWELL_DEVICE => NvidiaGeneration::MaxwellToVolta,
+            _ => NvidiaGeneration::PreMaxwell,
+        })
+    }
+
     /// Whether this is an NVIDIA GPU of the Turing generation or later.
     pub fn is_nvidia_turing_or_later(&self) -> bool {
-        self.vendor == AcceleratorVendor::Nvidia
-            && self.kind == AcceleratorKind::Gpu
-            && self.device_id >= NVIDIA_FIRST_TURING_DEVICE
+        self.nvidia_generation() == Some(NvidiaGeneration::TuringOrLater)
     }
 }
 
@@ -102,6 +131,19 @@ mod tests {
     fn pascal_predates_turing() {
         let gtx_1080 = accelerator("0x10de", "0x1b80", "0x030000");
         assert!(gtx_1080.is_some_and(|gpu| !gpu.is_nvidia_turing_or_later()));
+    }
+
+    #[test]
+    fn nvidia_generations_follow_the_device_id() {
+        let generation = |device| {
+            accelerator("0x10de", device, "0x030000").and_then(|gpu| gpu.nvidia_generation())
+        };
+        assert_eq!(generation("0x1180"), Some(NvidiaGeneration::PreMaxwell));
+        assert_eq!(generation("0x1380"), Some(NvidiaGeneration::MaxwellToVolta));
+        assert_eq!(generation("0x1db1"), Some(NvidiaGeneration::MaxwellToVolta));
+        assert_eq!(generation("0x1f08"), Some(NvidiaGeneration::TuringOrLater));
+        let arc_a770 = accelerator("0x8086", "0x56a0", "0x030000");
+        assert_eq!(arc_a770.and_then(|gpu| gpu.nvidia_generation()), None);
     }
 
     #[test]

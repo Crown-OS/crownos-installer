@@ -507,6 +507,8 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
 
         Step::ConfigureAiAcceleration { root, plan } => plan.commands(root),
 
+        Step::ConfigureGraphics { root, plan } => plan.commands(root),
+
         Step::ConfigureRepositories { root, microarch } => {
             vec![base::configure_repositories(root, *microarch)]
         }

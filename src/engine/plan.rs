@@ -66,6 +66,7 @@ use crate::util::cpuinfo::Microarch;
 
 use super::ai::{self, AiPlan};
 use super::base;
+use super::graphics::{self, GraphicsPlan};
 use super::probe::{Disk, Gap, Partition, SystemSnapshot};
 
 // --- MARK: Constants ---
@@ -676,6 +677,9 @@ pub enum Step {
     /// Record the AI stack chosen for this machine and fetch the parts of it
     /// the live image could not bundle.
     ConfigureAiAcceleration { root: String, plan: AiPlan },
+    /// Set up the NVIDIA driver and fetch the parts of the graphics stack the
+    /// live image could not bundle.
+    ConfigureGraphics { root: String, plan: GraphicsPlan },
     /// `genfstab` into the new system's `/etc/fstab`.
     GenerateFstab { root: String },
     /// Create a swapfile and add it to fstab.
@@ -811,6 +815,7 @@ impl Step {
             Self::ConfigureRepositories { .. } => "Configuring package repositories".to_owned(),
             Self::AddCrownosRepository { .. } => "Adding the CrownOS repository".to_owned(),
             Self::ConfigureAiAcceleration { .. } => "Setting up AI acceleration".to_owned(),
+            Self::ConfigureGraphics { .. } => "Setting up graphics drivers".to_owned(),
             Self::GenerateFstab { .. } => "Writing the filesystem table".to_owned(),
             Self::CreateSwapFile { .. } => "Creating the swap file".to_owned(),
             Self::ConfigureCompressedMemory { .. } => "Setting up compressed memory".to_owned(),
@@ -1519,11 +1524,14 @@ fn system_steps(
     let root = ROOT_MOUNT.to_owned();
     let ai_plan = (oobe.install.ai_features == AiFeatures::Enabled && snapshot.ai_bundled)
         .then(|| ai::ai_plan(&snapshot.accelerators));
+    let graphics_plan = graphics::graphics_plan(&snapshot.accelerators);
     let mut packages = base::packages(oobe.install.root_filesystem);
     packages.extend(
-        ai_plan
+        graphics_plan
+            .offline_packages
             .iter()
-            .flat_map(AiPlan::offline_packages)
+            .copied()
+            .chain(ai_plan.iter().flat_map(AiPlan::offline_packages))
             .map(str::to_owned),
     );
     let mut steps = vec![
@@ -1603,6 +1611,13 @@ fn system_steps(
     if snapshot.crownos_repo_key {
         steps.push(Step::AddCrownosRepository { root: root.clone() });
     }
+    let switcheroo = graphics_plan.service();
+    if graphics_plan.needs_setup() {
+        steps.push(Step::ConfigureGraphics {
+            root: root.clone(),
+            plan: graphics_plan,
+        });
+    }
     if let Some(plan) = ai_plan {
         steps.push(Step::ConfigureAiAcceleration {
             root: root.clone(),
@@ -1616,6 +1631,7 @@ fn system_steps(
         units: base::SERVICES
             .iter()
             .copied()
+            .chain(switcheroo)
             .chain(windows_apps)
             .map(str::to_owned)
             .collect(),
@@ -3011,6 +3027,88 @@ mod tests {
         .expect("a plan");
         assert!(configures_ai(&accepted));
         assert!(packages(&accepted).iter().any(|p| p == "crownos-ai-nvidia"));
+    }
+
+    #[test]
+    fn graphics_drivers_follow_the_detected_gpus_without_ai() {
+        use crate::util::pci::{Accelerator, AcceleratorKind, AcceleratorVendor};
+        let gpu = |vendor, device_id| Accelerator {
+            vendor,
+            kind: AcceleratorKind::Gpu,
+            device_id,
+        };
+        let rtx_2060 = gpu(AcceleratorVendor::Nvidia, 0x1f08);
+        let intel_igpu = gpu(AcceleratorVendor::Intel, 0xa7a0);
+        let radeon = gpu(AcceleratorVendor::Amd, 0x744c);
+        let packages = |plan: &Plan| -> Vec<String> {
+            plan.steps
+                .iter()
+                .find_map(|step| match step {
+                    Step::InstallBaseSystem { packages, .. } => Some(packages.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        let services = |plan: &Plan| -> Vec<String> {
+            plan.steps
+                .iter()
+                .find_map(|step| match step {
+                    Step::EnableServices { units, .. } => Some(units.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        let position = |plan: &Plan, wanted: fn(&Step) -> bool| plan.steps.iter().position(wanted);
+
+        let hybrid = iso_plan_with(|target| target.accelerators = vec![intel_igpu, rtx_2060])
+            .expect("a plan");
+        for expected in [
+            "linux-cachyos-nvidia-open",
+            "nvidia-utils",
+            "lib32-nvidia-utils",
+            "nvidia-prime",
+            "switcheroo-control",
+            "lib32-mesa",
+            "lib32-vulkan-intel",
+        ] {
+            assert!(
+                packages(&hybrid).iter().any(|p| p == expected),
+                "{expected} missing"
+            );
+        }
+        assert!(
+            services(&hybrid)
+                .iter()
+                .any(|unit| unit == graphics::SWITCHEROO_SERVICE)
+        );
+        let repositories = position(&hybrid, |s| matches!(s, Step::ConfigureRepositories { .. }));
+        let configures_graphics =
+            position(&hybrid, |s| matches!(s, Step::ConfigureGraphics { .. }));
+        assert!(repositories.is_some() && repositories < configures_graphics);
+        assert!(
+            commands(&hybrid).contains("options nvidia_drm modeset=1 fbdev=1"),
+            "the NVIDIA driver gets kernel mode setting"
+        );
+
+        let amd = iso_plan_with(|target| target.accelerators = vec![radeon]).expect("a plan");
+        assert!(packages(&amd).iter().any(|p| p == "lib32-mesa"));
+        assert!(packages(&amd).iter().any(|p| p == "lib32-vulkan-radeon"));
+        assert!(!packages(&amd).iter().any(|p| p.contains("nvidia")));
+        assert_eq!(
+            position(&amd, |s| matches!(s, Step::ConfigureGraphics { .. })),
+            None
+        );
+        assert!(
+            !services(&amd)
+                .iter()
+                .any(|unit| unit == graphics::SWITCHEROO_SERVICE)
+        );
+    }
+
+    #[test]
+    fn every_install_runs_power_profiles_daemon() {
+        let log = commands(&iso_plan_with(|_| {}).expect("a plan"));
+        assert!(log.contains("power-profiles-daemon.service"), "{log}");
     }
 
     #[test]

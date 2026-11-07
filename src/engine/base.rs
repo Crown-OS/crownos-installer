@@ -39,7 +39,11 @@ pub const ADMIN_GROUP: &str = "wheel";
 
 /// Units enabled in the new system. CrownOS ships no display manager: signing
 /// in on tty1 opens the desktop.
-pub const SERVICES: &[&str] = &["NetworkManager.service", "systemd-timesyncd.service"];
+pub const SERVICES: &[&str] = &[
+    "NetworkManager.service",
+    "systemd-timesyncd.service",
+    "power-profiles-daemon.service",
+];
 
 /// Installs Wine on the first boot that is online. Shipped by [`DESKTOP_PACKAGE`].
 pub const WINDOWS_APPS_SERVICE: &str = "crownos-windows-apps.service";
@@ -231,16 +235,22 @@ pub fn install_kernel(root: &str, esp_rel: &str) -> Vec<Cmd> {
             ),
         },
         Cmd::chroot(root, "mkinitcpio", &["-P"]),
-        Cmd::chroot(
-            root,
-            "cp",
-            &[
-                "--",
-                &format!("/boot/vmlinuz-{KERNEL}"),
-                &format!("{esp_rel}/{ESP_CROWNOS_DIR}/vmlinuz-{KERNEL}"),
-            ],
-        ),
+        copy_kernel_to_esp(root, esp_rel),
     ]
+}
+
+/// Copy the kernel onto the ESP beside the initramfs mkinitcpio keeps there.
+/// Run again after any `pacman -Syu` during the install, which may replace it.
+pub fn copy_kernel_to_esp(root: &str, esp_rel: &str) -> Cmd {
+    Cmd::chroot(
+        root,
+        "cp",
+        &[
+            "--",
+            &format!("/boot/vmlinuz-{KERNEL}"),
+            &format!("{esp_rel}/{ESP_CROWNOS_DIR}/vmlinuz-{KERNEL}"),
+        ],
+    )
 }
 
 #[cfg(test)]
