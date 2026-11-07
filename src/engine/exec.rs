@@ -559,6 +559,10 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             commands
         }
 
+        Step::ConfigureCompressedMemory { root, percent } => {
+            base::compressed_memory(root, *percent)
+        }
+
         Step::ConfigureLocale { root, locale } => base::configure_locale(root, locale),
 
         Step::ConfigureKeymap { root, keymap } => vec![Cmd::WriteFile {

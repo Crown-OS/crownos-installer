@@ -44,6 +44,17 @@ pub const SERVICES: &[&str] = &["NetworkManager.service", "systemd-timesyncd.ser
 /// Installs Wine on the first boot that is online. Shipped by [`DESKTOP_PACKAGE`].
 pub const WINDOWS_APPS_SERVICE: &str = "crownos-windows-apps.service";
 
+/// Compressed swap in RAM, as a share of physical memory. Settings resizes it
+/// through `crownos-memory`, which edits only the `zram-size` line.
+pub const ZRAM_PERCENT: u8 = 50;
+
+const ZRAM_CONFIG: &str = "/etc/systemd/zram-generator.conf";
+
+/// Swapping to zram costs a compression rather than a disk write, so the
+/// kernel is told to prefer it to dropping page cache, and to read single
+/// pages back instead of the clusters a disk wants.
+const ZRAM_SYSCTL: &str = "/etc/sysctl.d/90-crownos-zram.conf";
+
 const AUTOLOGIN_DROP_IN: &str = "/etc/systemd/system/getty@tty1.service.d/autologin.conf";
 
 /// The kernel package, and the name of its image and initramfs.
@@ -61,6 +72,7 @@ const BASE_PACKAGES: &[&str] = &[
     "dosfstools",
     "e2fsprogs",
     "nano",
+    "zram-generator",
 ];
 
 const BTRFS_PACKAGE: &str = "btrfs-progs";
@@ -108,6 +120,22 @@ pub fn stop_keyring_daemons(root: &str) -> Cmd {
             "all",
         ],
     )
+}
+
+/// zram swap at `percent` of RAM, ahead of the swap partition.
+pub fn compressed_memory(root: &str, percent: u8) -> Vec<Cmd> {
+    vec![
+        Cmd::WriteFile {
+            path: format!("{root}{ZRAM_CONFIG}"),
+            contents: format!(
+                "[zram0]\nzram-size = ram * {percent} / 100\ncompression-algorithm = zstd\nswap-priority = 100\n"
+            ),
+        },
+        Cmd::WriteFile {
+            path: format!("{root}{ZRAM_SYSCTL}"),
+            contents: "vm.swappiness = 100\nvm.page-cluster = 0\n".to_owned(),
+        },
+    ]
 }
 
 /// Point the installed system at the CachyOS builds `microarch` runs, with
@@ -257,6 +285,21 @@ mod tests {
             assert!(log.contains(expected), "{expected} missing from {log}");
         }
         assert!(!log.contains("pacman -S"), "nothing is downloaded: {log}");
+    }
+
+    #[test]
+    fn zram_size_is_the_line_crownos_memory_edits() {
+        let Some(Cmd::WriteFile { path, contents }) =
+            compressed_memory("/mnt", 50).into_iter().next()
+        else {
+            panic!("the zram config is a file");
+        };
+        assert_eq!(path, format!("/mnt{ZRAM_CONFIG}"));
+        assert!(
+            contents
+                .lines()
+                .any(|line| line == "zram-size = ram * 50 / 100")
+        );
     }
 
     #[test]

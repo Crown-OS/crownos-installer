@@ -684,6 +684,8 @@ pub enum Step {
         size_bytes: u64,
         filesystem: RootFilesystem,
     },
+    /// zram swap at `percent` of RAM.
+    ConfigureCompressedMemory { root: String, percent: u8 },
     /// Generate and select the locale.
     ConfigureLocale { root: String, locale: String },
     /// `/etc/vconsole.conf`.
@@ -757,6 +759,16 @@ pub enum Role {
     Boot,
 }
 
+impl Role {
+    fn gpt_type_and_name(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Root => (TYPE_LINUX_ROOT_X86_64, ROOT_PARTLABEL),
+            Self::Swap => (TYPE_LINUX_SWAP, SWAP_PARTLABEL),
+            Self::Boot => (TYPE_EFI_SYSTEM, BOOT_PARTLABEL),
+        }
+    }
+}
+
 /// What a step does to a block device, in the only two categories that matter
 /// for safety.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -801,6 +813,7 @@ impl Step {
             Self::ConfigureAiAcceleration { .. } => "Setting up AI acceleration".to_owned(),
             Self::GenerateFstab { .. } => "Writing the filesystem table".to_owned(),
             Self::CreateSwapFile { .. } => "Creating the swap file".to_owned(),
+            Self::ConfigureCompressedMemory { .. } => "Setting up compressed memory".to_owned(),
             Self::ConfigureLocale { .. } => "Setting the language".to_owned(),
             Self::ConfigureKeymap { .. } => "Setting the keyboard layout".to_owned(),
             Self::ConfigureTimezone { .. } => "Setting the time zone".to_owned(),
@@ -917,7 +930,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
     let layout = lay_out(
         disk,
         region,
-        LeadingSizes::for_swap(oobe.install.swap),
+        PartitionSizes::for_swap(oobe.install.swap),
         &input.ids,
     )?;
 
@@ -1162,14 +1175,43 @@ struct Layout {
     boot: Option<NewPartition>,
 }
 
-/// The sizes of the partitions placed ahead of root.
-#[derive(Clone, Copy, Debug, Default)]
-struct LeadingSizes {
-    boot_bytes: Option<u64>,
-    swap_bytes: Option<u64>,
+impl Layout {
+    /// Every new partition, by number: the order `sfdisk --append` hands the
+    /// numbers out in.
+    fn in_creation_order(&self) -> Vec<(&NewPartition, Role)> {
+        let mut created: Vec<_> = [
+            (self.boot.as_ref(), Role::Boot),
+            (self.swap.as_ref(), Role::Swap),
+            (Some(&self.root), Role::Root),
+        ]
+        .into_iter()
+        .filter_map(|(partition, role)| partition.map(|partition| (partition, role)))
+        .collect();
+        created.sort_unstable_by_key(|(partition, _)| partition.number);
+        created
+    }
 }
 
-impl LeadingSizes {
+/// Which side of root the swap partition sits on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SwapPlacement {
+    /// Root ends the region, so it can grow over a staging partition behind it.
+    #[default]
+    BeforeRoot,
+    /// Swap ends the region, so Settings can move the boundary between it and
+    /// a btrfs root while both are in use.
+    AfterRoot,
+}
+
+/// The sizes of the partitions root shares the region with.
+#[derive(Clone, Copy, Debug, Default)]
+struct PartitionSizes {
+    boot_bytes: Option<u64>,
+    swap_bytes: Option<u64>,
+    swap_placement: SwapPlacement,
+}
+
+impl PartitionSizes {
     fn for_swap(swap: SwapPlan) -> Self {
         match swap {
             SwapPlan::Partition { size_bytes } => Self {
@@ -1183,12 +1225,16 @@ impl LeadingSizes {
 
 /// Place the new partitions in the free region.
 ///
-/// Boot and swap go *first* and root takes everything after them, so that root
-/// always ends at the region's end. That is what makes reclaiming the staging
-/// partition possible at all: growing a partition means moving its last sector,
-/// and only the last partition in the region has a last sector that anything
-/// can be grown into.
-fn lay_out(disk: &Disk, region: Gap, sizes: LeadingSizes, ids: &NewIds) -> Result<Layout, Refusal> {
+/// Boot goes *first*. Swap goes before root when the staging partition may
+/// be reclaimed — growing a partition means moving its last sector, and only
+/// the last partition in the region has one anything can grow into — and
+/// after it otherwise.
+fn lay_out(
+    disk: &Disk,
+    region: Gap,
+    sizes: PartitionSizes,
+    ids: &NewIds,
+) -> Result<Layout, Refusal> {
     let align = (ALIGNMENT_BYTES / u64::from(disk.sector_size)).max(1);
     let start = align_up(region.start_sector, align);
     // The last usable sector, rounded *down* to an alignment boundary minus one,
@@ -1209,9 +1255,9 @@ fn lay_out(disk: &Disk, region: Gap, sizes: LeadingSizes, ids: &NewIds) -> Resul
         |size_bytes: u64| align_up(size_bytes.div_ceil(u64::from(disk.sector_size)), align);
     let boot_sectors = sizes.boot_bytes.map_or(0, sectors_for);
     let swap_sectors = sizes.swap_bytes.map_or(0, sectors_for);
-    let root_start = start + boot_sectors + swap_sectors;
+    let leading_sectors = boot_sectors + swap_sectors;
 
-    if root_start > end || end - root_start + 1 < min_root_sectors {
+    if start + leading_sectors > end || end - start - leading_sectors + 1 < min_root_sectors {
         return Err(match sizes.swap_bytes {
             Some(swap_bytes) => Refusal::SwapDoesNotFit {
                 swap_bytes,
@@ -1241,13 +1287,25 @@ fn lay_out(disk: &Disk, region: Gap, sizes: LeadingSizes, ids: &NewIds) -> Resul
         partition
     };
 
+    let root_sectors = end - start - leading_sectors + 1;
     let boot = sizes
         .boot_bytes
         .map(|_| place(boot_sectors, &ids.boot_partuuid));
-    let swap = sizes
-        .swap_bytes
-        .map(|_| place(swap_sectors, &ids.swap_partuuid));
-    let root = place(end - root_start + 1, &ids.root_partuuid);
+    let (root, swap) = match sizes.swap_placement {
+        SwapPlacement::BeforeRoot => {
+            let swap = sizes
+                .swap_bytes
+                .map(|_| place(swap_sectors, &ids.swap_partuuid));
+            (place(root_sectors, &ids.root_partuuid), swap)
+        }
+        SwapPlacement::AfterRoot => {
+            let root = place(root_sectors, &ids.root_partuuid);
+            let swap = sizes
+                .swap_bytes
+                .map(|_| place(swap_sectors, &ids.swap_partuuid));
+            (root, swap)
+        }
+    };
 
     Ok(Layout { root, swap, boot })
 }
@@ -1364,31 +1422,21 @@ fn build_steps(
     let esp_mount = format!("{ROOT_MOUNT}{ESP_MOUNT_REL}");
     let mut steps = Vec::new();
 
-    if let Some(boot) = &layout.boot {
-        steps.push(Step::CreatePartition {
-            disk: disk.path.clone(),
-            partition: boot.clone(),
-            type_guid: TYPE_EFI_SYSTEM.to_owned(),
-            name: BOOT_PARTLABEL.to_owned(),
-            role: Role::Boot,
-        });
-    }
-    if let Some(swap) = &layout.swap {
-        steps.push(Step::CreatePartition {
-            disk: disk.path.clone(),
-            partition: swap.clone(),
-            type_guid: TYPE_LINUX_SWAP.to_owned(),
-            name: SWAP_PARTLABEL.to_owned(),
-            role: Role::Swap,
-        });
-    }
-    steps.push(Step::CreatePartition {
-        disk: disk.path.clone(),
-        partition: layout.root.clone(),
-        type_guid: TYPE_LINUX_ROOT_X86_64.to_owned(),
-        name: ROOT_PARTLABEL.to_owned(),
-        role: Role::Root,
-    });
+    steps.extend(
+        layout
+            .in_creation_order()
+            .into_iter()
+            .map(|(partition, role)| {
+                let (type_guid, name) = role.gpt_type_and_name();
+                Step::CreatePartition {
+                    disk: disk.path.clone(),
+                    partition: partition.clone(),
+                    type_guid: type_guid.to_owned(),
+                    name: name.to_owned(),
+                    role,
+                }
+            }),
+    );
     steps.push(Step::SettleTable {
         disk: disk.path.clone(),
     });
@@ -1495,6 +1543,10 @@ fn system_steps(
     }
 
     steps.extend([
+        Step::ConfigureCompressedMemory {
+            root: root.clone(),
+            percent: base::ZRAM_PERCENT,
+        },
         Step::ConfigureLocale {
             root: root.clone(),
             locale: oobe.locale.locale.clone(),
@@ -1722,9 +1774,9 @@ pub struct IsoInput<'a> {
 ///    disk that no longer exists by the time it runs.
 /// 5. **The chosen region is still free** in that projected table.
 ///
-/// The layout inside that region is fixed: a [`BOOT_BYTES`] ESP of its own, swap
-/// the size of RAM up to [`MAX_SWAP_BYTES`], and an [`ISO_FILESYSTEM`] root over
-/// the rest. Its own ESP keeps it on the same disk as root and independent of
+/// The layout inside that region is fixed: a [`BOOT_BYTES`] ESP of its own, an
+/// [`ISO_FILESYSTEM`] root, and behind it swap the size of RAM up to
+/// [`MAX_SWAP_BYTES`], which Settings can resize later. Its own ESP keeps it on the same disk as root and independent of
 /// whatever else is installed.
 ///
 /// The pre-existing operating system, if there is one, is *not* identified or
@@ -1784,9 +1836,10 @@ pub fn plan_iso(input: &IsoInput<'_>) -> Result<Plan, Refusal> {
     let layout = lay_out(
         projected,
         region,
-        LeadingSizes {
+        PartitionSizes {
             boot_bytes: Some(BOOT_BYTES),
             swap_bytes,
+            swap_placement: SwapPlacement::AfterRoot,
         },
         &input.ids,
     )?;
@@ -2999,17 +3052,43 @@ mod tests {
     }
 
     #[test]
-    fn swap_matches_ram_and_sits_between_boot_and_root() {
+    fn swap_matches_ram_and_follows_root_so_settings_can_resize_it() {
         let plan = iso_plan_with(|target| target.memory_bytes = 8 * GIB).expect("a plan");
         let boot = plan.boot_partition.as_ref().expect("a boot partition");
         let swap = plan.swap_partition.as_ref().expect("a swap partition");
         assert_eq!(swap.size_bytes(), 8 * GIB);
-        assert_eq!(swap.start_sector, boot.end_sector + 1);
-        assert_eq!(plan.root.start_sector, swap.end_sector + 1);
+        assert_eq!(plan.root.start_sector, boot.end_sector + 1);
+        assert_eq!(swap.start_sector, plan.root.end_sector + 1);
+        assert!(plan.root.number < swap.number);
         assert!(
             plan.steps
                 .iter()
                 .any(|s| matches!(s, Step::MakeSwap { device } if device == &swap.path))
+        );
+    }
+
+    #[test]
+    fn partitions_are_created_in_the_order_sfdisk_numbers_them() {
+        let plan = iso_plan_with(|target| target.memory_bytes = 8 * GIB).expect("a plan");
+        let numbers: Vec<_> = plan
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                Step::CreatePartition { partition, .. } => Some(partition.number),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbers.len(), 3);
+        assert!(numbers.is_sorted());
+    }
+
+    #[test]
+    fn compressed_memory_takes_half_of_ram() {
+        let plan = iso_plan_with(|_| {}).expect("a plan");
+        assert!(
+            plan.steps
+                .iter()
+                .any(|step| matches!(step, Step::ConfigureCompressedMemory { percent: 50, .. }))
         );
     }
 
