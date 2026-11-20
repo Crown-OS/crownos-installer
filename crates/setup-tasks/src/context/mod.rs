@@ -13,7 +13,7 @@ pub use real::RealSystem;
 
 use crate::error::TaskError;
 use crate::utils::text::last_lines;
-use crate::utils::time_limit::TIMED_OUT_STATUS;
+use crate::utils::time_limit::{KILLED_STATUS, TIMED_OUT_STATUS};
 
 /// The number of stderr lines that a [`TaskError::Command`] keeps.
 const KEPT_STDERR_LINES: usize = 20;
@@ -42,13 +42,13 @@ impl Output {
     }
 
     /// Changes a failed run into [`TaskError::Command`], or into
-    /// [`TaskError::TimedOut`] when its time limit stopped it.
+    /// [`TaskError::TimedOut`] when its time limit stopped or killed it.
     pub fn check(self, program: &str) -> Result<Self, TaskError> {
         if self.succeeded() {
             return Ok(self);
         }
         if let Some(limit) = self.time_limit
-            && self.status == Some(TIMED_OUT_STATUS)
+            && matches!(self.status, None | Some(TIMED_OUT_STATUS | KILLED_STATUS))
         {
             return Err(TaskError::TimedOut {
                 program: program.to_owned(),

@@ -37,10 +37,14 @@ impl<'a> Context<'a> {
     /// network; the later calls of the pass use that result, so a pass where
     /// no task needs the network does not probe it.
     pub fn is_online(&self) -> bool {
-        *self
-            .online
-            .get()
-            .get_or_insert_with(|| network::is_online(self.system))
+        self.online.get().unwrap_or_else(|| self.probe_again())
+    }
+
+    /// Probes the network and keeps the result for the rest of the pass.
+    pub fn probe_again(&self) -> bool {
+        let online = network::is_online(self.system);
+        self.online.set(Some(online));
+        online
     }
 }
 
@@ -166,7 +170,8 @@ pub fn run_pass(
 
         let finished_state = match outcome {
             Ok(()) => state(TaskStatus::Done, Some(started_at_unix), Some(now_unix())),
-            Err(_) if runner.needs_network(context) && !network::is_online(context.system) => {
+            Err(error) if runner.needs_network(context) && !context.probe_again() => {
+                tracing::debug!("{task}: {error}; offline, kept pending");
                 summary.waiting_for_network.push(task);
                 state(TaskStatus::Pending, None, None)
             }

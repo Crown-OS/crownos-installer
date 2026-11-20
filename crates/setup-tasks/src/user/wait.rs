@@ -9,8 +9,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const WAIT_LIMIT: Duration = Duration::from_secs(30 * 60);
 
 /// Reads the choices and the task states every 5 seconds until each wanted
-/// task is `Done` for the current choices. `Pending`, `Running` and `Failed`
-/// tasks keep the wait. A broken `/etc/crownos/setup.ron` counts as the
+/// task is `Done` for the current choices or gave up after its last attempt.
+/// `Pending`, `Running` and `Failed` tasks that can try again keep the wait. A broken `/etc/crownos/setup.ron` counts as the
 /// default choices. `None` after 30 minutes.
 pub fn wait_for_wanted_tasks(system: &dyn System) -> Option<SetupSnapshot> {
     let polls = WAIT_LIMIT.as_secs() / POLL_INTERVAL.as_secs();

@@ -16,3 +16,10 @@ jobs:
     uses: Crown-OS/.github/.github/workflows/rust.yml@main
     with:
       toolchain: 1.97.1
+
+  # The NetworkManager hook of crownos-setup, with a fake systemctl.
+  hook-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sh packaging/crownos-setup/network/50-crownos-setup.test.sh
