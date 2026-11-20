@@ -24,7 +24,7 @@
 //! | 2 | Network — optional | Disk — which disk to install on |
 //! | 3 | | Space — where on it, and how |
 //! | 4 | Account | Account |
-//! | 5 | Apps — Windows apps support | Apps — Windows apps support |
+//! | 5 | Apps — browser, Windows apps, developer tools | Apps — browser, Windows apps, developer tools |
 //! | 6 | Confirm | Confirm |
 //! | 7 | Install → Restart | Install → Restart |
 //!

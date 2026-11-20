@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::engine::exec::{Event, Mode, Secrets, execute};
 use crate::engine::plan::{Account, IsoInput, Plan, Step, plan_iso};
 use crate::engine::probe::RealSystem;
-use crate::oobe::{AiFeatures, Locale, WindowsApps};
+use crate::oobe::{AiFeatures, Browser, DeveloperTools, Locale, WindowsApps};
 use crate::ui;
 
 /// The line a successful run ends with, which the install test waits for.
@@ -32,6 +32,10 @@ pub struct Config {
     pub ai_features: AiFeatures,
     #[serde(default)]
     pub windows_apps: WindowsApps,
+    #[serde(default)]
+    pub browser: Browser,
+    #[serde(default)]
+    pub developer_tools: DeveloperTools,
 }
 
 impl Config {
@@ -72,6 +76,8 @@ fn plan_for(context: &ui::Context, config: &Config) -> Result<Plan> {
         edits: Vec::new(),
         ai_features: config.ai_features,
         windows_apps: config.windows_apps,
+        browser: config.browser,
+        developer_tools: config.developer_tools,
     })
     .context("the install was refused")
 }
@@ -111,6 +117,23 @@ mod tests {
             serde_json::from_str(r#"{"username":"crown","password":"pw","hostname":"box"}"#)
                 .expect("a minimal config parses");
         assert!(config.kernel_args.is_empty());
+    }
+
+    #[test]
+    fn a_config_can_choose_the_browser_and_developer_tools() {
+        let config: Config = serde_json::from_str(
+            r#"{"username":"crown","password":"pw","hostname":"box",
+                "browser":"brave","developer_tools":{"codex":true}}"#,
+        )
+        .expect("the choices parse");
+        assert_eq!(config.browser, Browser::Brave);
+        assert_eq!(
+            config.developer_tools,
+            DeveloperTools {
+                codex: true,
+                ..DeveloperTools::default()
+            }
+        );
     }
 
     #[test]

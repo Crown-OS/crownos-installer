@@ -15,7 +15,8 @@ use crate::engine::plan::{NewIds, Refusal, Step};
 use crate::engine::probe::{self, fixture};
 use crate::oobe::Oobe;
 use crate::oobe::{
-    Install, Locale, Staging, StagingKind, SwapPlan, Target as OobeTarget, UserAccount, WindowsApps,
+    Browser, DeveloperTools, Install, Locale, Staging, StagingKind, SwapPlan, Target as OobeTarget,
+    UserAccount, WindowsApps,
 };
 use crate::provenance::Provenance;
 
@@ -36,6 +37,8 @@ pub(super) fn payload_context(user: Option<UserAccount>, auto_install: bool) -> 
             keep_windows: true,
             ai_features: crate::oobe::AiFeatures::Disabled,
             windows_apps: crate::oobe::WindowsApps::Disabled,
+            browser: crate::oobe::Browser::Chromium,
+            developer_tools: crate::oobe::DeveloperTools::default(),
         },
         target: OobeTarget {
             esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -246,7 +249,46 @@ fn the_apps_page_comes_before_the_confirmation_and_its_answer_reaches_the_plan()
 
         wizard.set_windows_apps(WindowsApps::Enabled);
         assert!(enables_windows_apps(&wizard));
+
+        wizard.set_browser(Browser::Firefox);
+        let config = setup_config(&wizard).expect("the choices are saved");
+        assert_eq!(config.browser, crownos_config::system::Browser::Firefox);
+        assert!(
+            !pacstrapped(&wizard)
+                .iter()
+                .any(|package| package == "firefox")
+        );
+
+        wizard.set_developer_tools(DeveloperTools {
+            codex: true,
+            ..DeveloperTools::default()
+        });
+        assert!(
+            setup_config(&wizard)
+                .expect("the choices are saved")
+                .developer_tools
+                .codex
+        );
     }
+}
+
+fn setup_config(wizard: &Wizard) -> Option<crownos_config::system::SetupConfig> {
+    wizard.plan()?.steps.iter().find_map(|step| match step {
+        Step::ConfigureSetup { config, .. } => Some(*config),
+        _ => None,
+    })
+}
+
+fn pacstrapped(wizard: &Wizard) -> Vec<String> {
+    wizard
+        .plan()
+        .and_then(|plan| {
+            plan.steps.iter().find_map(|step| match step {
+                Step::InstallBaseSystem { packages, .. } => Some(packages.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_default()
 }
 
 /// Offline, both flows stop at the network step, and walk on from it to the
