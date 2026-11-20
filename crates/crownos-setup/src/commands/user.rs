@@ -16,7 +16,10 @@ use crownos_setup_tasks::utils::user_directories::UserDirectories;
 /// the wait or the summary. When the wait times out, it returns quietly.
 pub fn set_up_user(system: &dyn System, wait: bool) -> Result<()> {
     let directories = user_directories()?;
-    let snapshot = SetupSnapshot::load(system)?;
+    let snapshot = SetupSnapshot::load(system).unwrap_or_else(|error| {
+        tracing::warn!("{error}; using the default choices");
+        SetupSnapshot::with_default_choices(system)
+    });
     log_report(&user::wire(system, &directories, &snapshot));
     if !wait {
         return Ok(());
@@ -25,8 +28,10 @@ pub fn set_up_user(system: &dyn System, wait: bool) -> Result<()> {
         return Ok(());
     };
     log_report(&user::wire(system, &directories, &snapshot));
-    if notify_once(system, &directories, &snapshot)? {
-        tracing::info!("posted the setup summary");
+    match notify_once(system, &directories, &snapshot) {
+        Ok(true) => tracing::info!("posted the setup summary"),
+        Ok(false) => {}
+        Err(error) => tracing::warn!("did not post the setup summary: {error}"),
     }
     Ok(())
 }
@@ -90,24 +95,33 @@ fn unchanged_file_lines(report: &UserSetupReport) -> Vec<String> {
             path.display()
         )
     });
-    let skipped = report.skipped.iter().map(|path| {
-        format!(
-            "did not change {}: it has comments or an unexpected format",
-            path.display()
-        )
-    });
+    let skipped = report
+        .skipped
+        .iter()
+        .map(|(path, reason)| format!("did not change {}: {}", path.display(), reason.describe()));
     kept.chain(skipped).collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use crownos_setup_tasks::user::SkipReason;
+
     use super::*;
 
     #[test]
     fn a_report_without_changes_prints_nothing_at_the_info_level() {
         let report = UserSetupReport {
             kept: vec![("/home/ada/.codex/config.toml".into(), "playwright")],
-            skipped: vec!["/home/ada/.config/zed/settings.json".into()],
+            skipped: vec![
+                (
+                    "/home/ada/.config/zed/settings.json".into(),
+                    SkipReason::UnexpectedFormat,
+                ),
+                (
+                    "/home/ada/.config/crownos/dock.ron".into(),
+                    SkipReason::SymbolicLink,
+                ),
+            ],
             ..UserSetupReport::default()
         };
         assert!(change_lines(&report).is_empty());
@@ -116,6 +130,7 @@ mod tests {
             [
                 "kept the playwright MCP server in /home/ada/.codex/config.toml: it has other settings",
                 "did not change /home/ada/.config/zed/settings.json: it has comments or an unexpected format",
+                "did not change /home/ada/.config/crownos/dock.ron: it is a symbolic link",
             ]
         );
     }

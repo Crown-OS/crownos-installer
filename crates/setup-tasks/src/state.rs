@@ -66,14 +66,15 @@ impl<'a> StateStore<'a> {
         self.system.remove_file(&path)
     }
 
-    /// Marks `tasks` as `Pending` for `generation`, so that a reader waits
-    /// for the runner.
+    /// Marks `tasks` as `Pending` for `generation` with no attempts, so that a
+    /// reader waits for the runner and the runner tries each task again.
     pub fn reset(&self, tasks: &[SetupTask], generation: u64) -> Result<(), TaskError> {
         let pending = TaskState {
             status: TaskStatus::Pending,
             generation,
             started_at_unix: None,
             finished_at_unix: None,
+            attempts: 0,
         };
         tasks.iter().try_for_each(|&task| self.save(task, &pending))
     }

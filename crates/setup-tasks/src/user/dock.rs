@@ -13,7 +13,8 @@ use crate::utils::{dock, home_file};
 /// True when the dock file changed. Records the generation in the marker
 /// when the dock names the browser after the step. While the `browser` task
 /// is not `Done`, or while the dock has no file or no browser entry, the
-/// marker stays and the next login tries again.
+/// marker stays and the next login tries again. A dock or marker file that is
+/// a symbolic link gives [`TaskError::SymbolicLink`], and nothing changes.
 pub fn update_once(
     system: &dyn System,
     directories: &UserDirectories,
@@ -30,6 +31,9 @@ pub fn update_once(
     };
     let browser = snapshot.config.browser;
     let edited_dock = dock::replace_browser(&dock_text, browser);
+    if edited_dock.is_some() || dock::names(&dock_text, browser) {
+        home_file::refuse_symbolic_link(system, &marker_file)?;
+    }
     if let Some(edited_text) = &edited_dock {
         home_file::write(system, &dock_file, edited_text)?;
     } else if !dock::names(&dock_text, browser) {
@@ -142,5 +146,54 @@ mod tests {
             .with_file(DOCK, CHROMIUM_DOCK)
             .with_file(MARKER, "(dock_generation: 30)");
         assert!(update_once(&system, &directories(), &snapshot(TaskStatus::Done)).expect("runs"));
+    }
+}
+
+#[cfg(test)]
+mod symbolic_link_tests {
+    use std::path::Path;
+
+    use crownos_config::system::{Browser, SetupConfig, TaskStatus};
+
+    use super::*;
+    use crate::context::fake::FakeSystem;
+    use crate::user::snapshot::tests::state;
+
+    const DOCK: &str = "/home/ada/.config/crownos/dock.ron";
+    const MARKER: &str = "/home/ada/.local/state/crownos/setup/user.ron";
+    const CHROMIUM_DOCK: &str = "(items: [\"/usr/share/applications/chromium.desktop\"])";
+
+    fn snapshot() -> SetupSnapshot {
+        SetupSnapshot {
+            config: SetupConfig {
+                browser: Browser::Brave,
+                ..SetupConfig::default()
+            },
+            generation: 40,
+            states: vec![(SetupTask::Browser, state(TaskStatus::Done, 40))],
+        }
+    }
+
+    fn directories() -> UserDirectories {
+        UserDirectories::new("/home/ada".into(), None, None)
+    }
+
+    #[test]
+    fn a_linked_dock_or_marker_stays_as_it_is() {
+        for (link, target) in [
+            (DOCK, "/home/ada/dotfiles/dock.ron"),
+            (MARKER, "/home/ada/dotfiles/user.ron"),
+        ] {
+            let system = FakeSystem::new()
+                .with_file(DOCK, CHROMIUM_DOCK)
+                .with_file(target, CHROMIUM_DOCK)
+                .with_link(link, target);
+            assert!(matches!(
+                update_once(&system, &directories(), &snapshot()),
+                Err(TaskError::SymbolicLink(path)) if path.as_path() == Path::new(link)
+            ));
+            assert!(system.journal().is_empty(), "{:?}", system.journal());
+            assert_eq!(system.file(target).as_deref(), Some(CHROMIUM_DOCK));
+        }
     }
 }

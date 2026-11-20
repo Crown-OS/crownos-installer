@@ -13,4 +13,4 @@ pub use marker::UserMarker;
 pub use notification::notify_once;
 pub use snapshot::SetupSnapshot;
 pub use wait::wait_for_wanted_tasks;
-pub use wire::{UserSetupReport, wire};
+pub use wire::{SkipReason, UserSetupReport, wire};

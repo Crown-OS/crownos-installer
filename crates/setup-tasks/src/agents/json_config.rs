@@ -20,7 +20,7 @@ pub(super) fn merge_servers_into_file(
         return Ok(None);
     };
     let entries = SERVERS.map(|server| (server.name, entry(&server)));
-    let Some(merge) = json_merge::merge_servers(&mut document, key_path, &entries) else {
+    let Some(merge) = json_merge::merge_servers(&mut document, key_path, entries) else {
         return Ok(None);
     };
     if !merge.added.is_empty() {

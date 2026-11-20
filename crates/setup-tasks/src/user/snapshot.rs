@@ -26,6 +26,17 @@ impl SetupSnapshot {
         let config_path = Path::new(SETUP_CONFIG_PATH);
         let generation = config::generation(system, config_path);
         let config = config::load_or_default(system, config_path)?;
+        Ok(Self::with_states(system, config, generation))
+    }
+
+    /// The task states with the default choices, for a broken
+    /// `/etc/crownos/setup.ron`.
+    pub fn with_default_choices(system: &dyn System) -> Self {
+        let generation = config::generation(system, Path::new(SETUP_CONFIG_PATH));
+        Self::with_states(system, SetupConfig::default(), generation)
+    }
+
+    fn with_states(system: &dyn System, config: SetupConfig, generation: u64) -> Self {
         let store = StateStore::new(system, SETUP_STATE_DIR);
         let states = SetupTask::ALL
             .into_iter()
@@ -37,11 +48,11 @@ impl SetupSnapshot {
                 }
             })
             .collect();
-        Ok(Self {
+        Self {
             config,
             generation,
             states,
-        })
+        }
     }
 
     /// True when `task` is `Done` for the current choices.
@@ -77,6 +88,7 @@ pub(crate) mod tests {
             generation,
             started_at_unix: None,
             finished_at_unix: None,
+            attempts: 0,
         }
     }
 

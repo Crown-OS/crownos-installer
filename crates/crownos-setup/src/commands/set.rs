@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn browser_set_keeps_the_tools_and_resets_browser_and_playwright() {
-        let system = FakeSystem::new().with_file(
+        let system = FakeSystem::new().with_program("systemctl").with_file(
             SETUP_CONFIG_PATH,
             "(browser: Chromium, developer_tools: (codex: true))",
         );
@@ -110,6 +110,7 @@ mod tests {
     #[test]
     fn tools_set_off_removes_the_installed_package_after_the_reset() {
         let system = FakeSystem::new()
+            .with_program("systemctl")
             .with_file(
                 SETUP_CONFIG_PATH,
                 "(browser: Firefox, developer_tools: (cursor: true))",
@@ -141,7 +142,7 @@ mod tests {
 
     #[test]
     fn tools_set_on_installs_nothing_itself() {
-        let system = FakeSystem::new();
+        let system = FakeSystem::new().with_program("systemctl");
         set_developer_tool(&system, DeveloperTool::Codex, true).expect("sets");
 
         assert!(stored_config(&system).developer_tools.codex);
