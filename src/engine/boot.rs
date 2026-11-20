@@ -1,10 +1,10 @@
-//! systemd-boot, the kernel on the ESP, and "Recover the previous version".
+//! rEFInd, the kernel on the ESP, and the rollback entry.
 //!
-//! systemd-boot cannot read btrfs, so the kernel and initramfs live on the ESP.
-//! Beside them sits a copy of the pair that booted before the last pacman
-//! transaction (`-previous`, kept current by crownos-base's pacman hooks), and a
-//! second loader entry boots that copy with `crownos.recover`, which makes the
-//! initramfs roll the root back to snapper's newest pre-update snapshot.
+//! rEFInd cannot read btrfs, so the kernel and initramfs live on the ESP. Before
+//! each update crownos-updated keeps the current pair in `EFI/CrownOS/rollback`
+//! and writes `crownos-rollback.conf` with one entry that boots that pair with
+//! `crownos.recover=<N>`. The initramfs then rolls the root back to snapshot N.
+//! The menu stays hidden until a key is held during boot.
 //!
 //! Every function returns commands and runs nothing.
 
@@ -22,58 +22,34 @@ pub enum EspOrigin {
     Shared,
 }
 
-/// The two loader entries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BootEntry {
-    Current,
-    Previous,
-}
+/// rEFInd's directory on the ESP.
+pub const REFIND_DIR: &str = "EFI/refind";
 
-impl BootEntry {
-    pub const ALL: [Self; 2] = [Self::Current, Self::Previous];
+/// The binary the `refind` package ships. The package has no pacman hook, so
+/// crownos-base's hook copies it to the ESP after each upgrade.
+const REFIND_PACKAGED_BINARY: &str = "/usr/share/refind/refind_x64.efi";
 
-    pub fn file_name(self) -> &'static str {
-        match self {
-            Self::Current => "crownos.conf",
-            Self::Previous => "crownos-recover.conf",
-        }
-    }
+const REFIND_BINARY: &str = "refind_x64.efi";
 
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Current => "CrownOS",
-            Self::Previous => "Recover the previous version",
-        }
-    }
+pub const REFIND_CONF: &str = "refind.conf";
 
-    fn image_suffix(self) -> &'static str {
-        match self {
-            Self::Current => "",
-            Self::Previous => "-previous",
-        }
-    }
+/// Included by `refind.conf` and owned by crownos-updated.
+pub const ROLLBACK_CONF: &str = "crownos-rollback.conf";
 
-    fn sort_key(self) -> &'static str {
-        match self {
-            Self::Current => "crownos",
-            Self::Previous => "crownos-recover",
-        }
-    }
+/// Where crownos-updated keeps the kernel pair the rollback entry boots.
+pub const ESP_ROLLBACK_DIR: &str = "EFI/CrownOS/rollback";
 
-    fn extra_options(self) -> &'static str {
-        match self {
-            Self::Current => "",
-            Self::Previous => " crownos.recover",
-        }
-    }
-}
+/// The removable-media path the firmware boots when no boot entry works.
+/// Written only on an ESP this install created.
+const FALLBACK_LOADER: &str = "EFI/BOOT/BOOTX64.EFI";
 
-/// systemd-boot's settings. `menu-hidden` boots the default at once and shows
-/// the menu (CrownOS, "Recover the previous version", Windows) only while a key
-/// is held during boot. Space is reliable; a bare Shift depends on the
-/// firmware reporting it.
-pub const LOADER_CONF: &str =
-    "default crownos.conf\ntimeout menu-hidden\nconsole-mode keep\neditor no\n";
+const BACKUP_SUFFIX: &str = ".crownos-backup";
+
+const ROLLBACK_CONF_PLACEHOLDER: &str = "# Written by crownos-updated before each update.\n";
+
+const FIRMWARE_ENTRY_LABEL: &str = "CrownOS";
+
+const FIRMWARE_ENTRY_LOADER: &str = "\\EFI\\refind\\refind_x64.efi";
 
 /// Overrides the HOOKS of `/etc/mkinitcpio.conf`. The busybox flavour, because
 /// the systemd flavour never runs a hook's `run_hook`, and `crownos-recover`
@@ -89,66 +65,94 @@ const MKINITCPIO_HOOKS: &str = "HOOKS=(base udev autodetect microcode modconf km
 const SNAPPER_CONFIGS_FILE: &str = "/etc/conf.d/snapper";
 
 /// Shipped by crownos-base (crownos-iso's `packaging/boot/systemd/`), which is
-/// always in the pacstrap set: after a recovery boot it puts the recovered
+/// always in the pacstrap set: after a rollback boot it puts the rollback
 /// kernel back as the current one, so the next ordinary boot matches the
-/// rolled-back root. Enabling it is not allowed to fail, because a recovery
+/// rolled-back root. Enabling it is not allowed to fail, because a rollback
 /// without it leaves the default entry booting the new kernel against the old
 /// root.
 const RECOVER_FINISH_SERVICE: &str = "crownos-recover-finish.service";
 
-/// One loader entry. systemd-boot finds Windows by itself, so there is
-/// deliberately no Windows entry and nothing of Windows' to go stale.
-pub fn boot_entry(root: &str, esp_rel: &str, kernel_cmdline: &str, entry: BootEntry) -> Cmd {
-    let suffix = entry.image_suffix();
-    Cmd::WriteFile {
-        path: format!("{root}{esp_rel}/loader/entries/{}", entry.file_name()),
-        contents: format!(
-            "title   {}\n\
-             sort-key {}\n\
-             linux   /{ESP_CROWNOS_DIR}/vmlinuz-{KERNEL}{suffix}\n\
-             initrd  /{ESP_CROWNOS_DIR}/initramfs-{KERNEL}{suffix}.img\n\
-             options {kernel_cmdline}{}\n",
-            entry.title(),
-            entry.sort_key(),
-            entry.extra_options(),
-        ),
-    }
+/// The update daemon. [`base::SERVICES`](super::base::SERVICES) enables it;
+/// the verification script reports it because the install test asserts it.
+const UPDATE_SERVICE: &str = "crownos-updated.service";
+
+/// `timeout -1` boots the default at once and shows the menu only while a key
+/// is held. The ESP's kernel directories are not scanned, so the only CrownOS
+/// entries are the one below and the rollback entry crownos-updated includes.
+/// The include comes after the CrownOS entry: `default_selection` selects the
+/// first entry whose title contains "CrownOS", and the rollback title does too.
+/// A `"` in the command line is doubled, as rEFInd reads it in a quoted token.
+pub fn refind_conf(kernel_cmdline: &str) -> String {
+    let quoted_cmdline = kernel_cmdline.replace('"', "\"\"");
+    format!(
+        "# Written by crownos-installer. crownos-updated writes {ROLLBACK_CONF}.
+timeout -1
+use_nvram false
+scanfor manual,internal,external
+scan_all_linux_kernels false
+dont_scan_dirs {ESP_CROWNOS_DIR},{ESP_ROLLBACK_DIR}
+showtools shutdown,reboot,firmware
+default_selection \"CrownOS\"
+
+menuentry \"CrownOS\" {{
+    loader /{ESP_CROWNOS_DIR}/vmlinuz-{KERNEL}
+    initrd /{ESP_CROWNOS_DIR}/initramfs-{KERNEL}.img
+    options \"{quoted_cmdline}\"
+}}
+
+include {ROLLBACK_CONF}
+"
+    )
 }
 
-/// On a shared ESP a `loader.conf` that is already there was put there by
-/// something else, and its `default` line decides what the machine boots,
-/// Windows included.
-pub fn loader_config(root: &str, esp_rel: &str, origin: EspOrigin) -> Cmd {
-    let path = format!("{root}{esp_rel}/loader/loader.conf");
-    let contents = LOADER_CONF.to_owned();
-    match origin {
-        EspOrigin::Created => Cmd::WriteFile { path, contents },
-        EspOrigin::Shared => Cmd::WriteFileIfAbsent { path, contents },
-    }
-}
-
-/// `loader.conf` goes first: `bootctl install` writes a stub of its own when
-/// none exists, which would otherwise win on the installer's own ESP.
+/// rEFInd and its configuration on the ESP, and a firmware boot entry for it.
+///
+/// On a created ESP rEFInd is also the fallback loader, so the firmware boots
+/// it even when the boot entry cannot be written. On a shared ESP the fallback
+/// belongs to the other system, so the boot entry is the only way to boot
+/// CrownOS and must not fail. An existing `refind.conf` there is kept as a
+/// backup first.
 pub fn install_bootloader(
     root: &str,
     esp_rel: &str,
     kernel_cmdline: &str,
     root_partuuid: &str,
     origin: EspOrigin,
+    disk: &str,
+    esp_number: u32,
 ) -> Vec<Cmd> {
+    let esp = format!("{root}{esp_rel}");
+    let refind_conf_path = format!("{esp}/{REFIND_DIR}/{REFIND_CONF}");
     let mut commands = vec![
-        loader_config(root, esp_rel, origin),
-        Cmd::chroot(
-            root,
-            "bootctl",
-            &[&format!("--esp-path={esp_rel}"), "install"],
-        ),
+        Cmd::MakeDirs {
+            path: format!("{esp}/{ESP_ROLLBACK_DIR}"),
+        },
+        install_refind_binary(root, &format!("{esp_rel}/{REFIND_DIR}/{REFIND_BINARY}")),
     ];
-    commands.extend(
-        BootEntry::ALL
-            .into_iter()
-            .map(|entry| boot_entry(root, esp_rel, kernel_cmdline, entry)),
-    );
+    if origin == EspOrigin::Shared {
+        commands.push(Cmd::CopyIfPresent {
+            from: refind_conf_path.clone(),
+            to: format!("{refind_conf_path}{BACKUP_SUFFIX}"),
+        });
+    }
+    commands.extend([
+        Cmd::WriteFile {
+            path: refind_conf_path,
+            contents: refind_conf(kernel_cmdline),
+        },
+        Cmd::WriteFile {
+            path: format!("{esp}/{REFIND_DIR}/{ROLLBACK_CONF}"),
+            contents: ROLLBACK_CONF_PLACEHOLDER.to_owned(),
+        },
+    ]);
+    let firmware_entry = firmware_boot_entry(disk, esp_number);
+    match origin {
+        EspOrigin::Created => commands.extend([
+            install_refind_binary(root, &format!("{esp_rel}/{FALLBACK_LOADER}")),
+            Cmd::best_effort(firmware_entry),
+        ]),
+        EspOrigin::Shared => commands.push(firmware_entry),
+    }
     commands.extend([
         Cmd::WriteFile {
             path: format!("{root}/etc/kernel/cmdline"),
@@ -162,9 +166,31 @@ pub fn install_bootloader(
     commands
 }
 
+fn install_refind_binary(root: &str, target: &str) -> Cmd {
+    Cmd::chroot(root, "install", &["-Dm644", REFIND_PACKAGED_BINARY, target])
+}
+
+/// Runs in the live system, which sees the firmware's variables.
+fn firmware_boot_entry(disk: &str, esp_number: u32) -> Cmd {
+    Cmd::run(
+        "efibootmgr",
+        &[
+            "--create",
+            "--disk",
+            disk,
+            "--part",
+            &esp_number.to_string(),
+            "--label",
+            FIRMWARE_ENTRY_LABEL,
+            "--loader",
+            FIRMWARE_ENTRY_LOADER,
+        ],
+    )
+}
+
 /// A preset pointing mkinitcpio straight at the ESP, so every rebuild lands
-/// where systemd-boot reads it. The kernel itself is copied by crownos-base's
-/// pacman hook after each upgrade, and once here.
+/// where rEFInd reads it. The kernel itself is copied by crownos-base's pacman
+/// hook after each upgrade, and once here.
 pub fn install_kernel(root: &str, esp_rel: &str) -> Vec<Cmd> {
     vec![
         Cmd::MakeDirs {
@@ -201,43 +227,36 @@ pub fn copy_kernel_to_esp(root: &str, esp_rel: &str) -> Cmd {
     )
 }
 
-/// The last thing before services are enabled: arm snapper, so the user's
-/// first transaction is the first one snapshotted, and seed the `-previous`
-/// kernel from the final installed one so the recovery entry boots from day
-/// one. Ends with a command whose output is the on-disk evidence the ISO's
-/// install test reads.
-pub fn prepare_recovery(root: &str, esp_rel: &str, origin: EspOrigin) -> Vec<Cmd> {
-    let seed = Cmd::chroot(
-        root,
-        "env",
-        &[
-            &format!("CROWNOS_ESP={esp_rel}"),
-            "crownos-esp-kernel",
-            "seed",
-        ],
-    );
+/// The last step inside the new system: arm snapper, so the user's first
+/// transaction is the first one snapshotted, and enable the unit that finishes
+/// a rollback. Ends with a command whose output is the on-disk evidence the
+/// ISO's install test reads.
+pub fn prepare_recovery(root: &str, esp_rel: &str) -> Vec<Cmd> {
     vec![
         Cmd::WriteFile {
             path: format!("{root}{SNAPPER_CONFIGS_FILE}"),
             contents: "SNAPPER_CONFIGS=\"root\"\n".to_owned(),
         },
         Cmd::chroot(root, "snapper", &["--no-dbus", "-c", "root", "get-config"]),
-        match origin {
-            EspOrigin::Created => seed,
-            EspOrigin::Shared => Cmd::best_effort(seed),
-        },
         Cmd::chroot(root, "systemctl", &["enable", RECOVER_FINISH_SERVICE]),
         Cmd::chroot(root, "sh", &["-c", &verification_script(esp_rel)]),
     ]
 }
 
 fn verification_script(esp_rel: &str) -> String {
+    let refind = format!("{esp_rel}/{REFIND_DIR}");
+    let unit_state =
+        |unit: &str| format!("printf '%s %s\\n' {unit} \"$(systemctl is-enabled {unit})\"");
     format!(
-        "grep -H . {esp_rel}/loader/loader.conf {esp_rel}/loader/entries/*.conf {MKINITCPIO_DROP_IN}; \
+        "grep -H . {refind}/{REFIND_CONF} {refind}/{ROLLBACK_CONF} {MKINITCPIO_DROP_IN}; \
          grep -H NUMBER_LIMIT /etc/snapper/configs/root; \
-         printf '{RECOVER_FINISH_SERVICE} %s\\n' \"$(systemctl is-enabled {RECOVER_FINISH_SERVICE})\"; \
+         grep -H '^Server' /etc/pacman.conf; \
+         {}; \
+         {}; \
          btrfs subvolume get-default /; \
-         ls {esp_rel}/{ESP_CROWNOS_DIR}"
+         ls {esp_rel}/{ESP_CROWNOS_DIR} {refind}",
+        unit_state(RECOVER_FINISH_SERVICE),
+        unit_state(UPDATE_SERVICE),
     )
 }
 
@@ -245,65 +264,117 @@ fn verification_script(esp_rel: &str) -> String {
 mod tests {
     use super::*;
 
-    fn written(command: &Cmd) -> (&str, &str) {
-        match command {
-            Cmd::WriteFile { path, contents } | Cmd::WriteFileIfAbsent { path, contents } => {
-                (path, contents)
-            }
-            other => panic!("expected a file write, got {other}"),
-        }
+    const CMDLINE: &str = "root=PARTUUID=x rw";
+
+    fn log(commands: &[Cmd]) -> Vec<String> {
+        commands.iter().map(ToString::to_string).collect()
+    }
+
+    fn position(log: &[String], needle: &str) -> usize {
+        log.iter()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("`{needle}` missing from {log:?}"))
+    }
+
+    fn bootloader(origin: EspOrigin) -> Vec<Cmd> {
+        install_bootloader("/mnt", "/efi", CMDLINE, "x", origin, "/dev/sda", 1)
+    }
+
+    fn firmware_entry(commands: &[Cmd]) -> &Cmd {
+        commands
+            .iter()
+            .find(|command| command.to_string().contains("efibootmgr"))
+            .unwrap_or_else(|| panic!("no boot entry in {commands:?}"))
     }
 
     #[test]
-    fn the_entries_are_named_for_the_loader_default_and_the_recovery_menu() {
-        assert_eq!(BootEntry::Current.file_name(), "crownos.conf");
-        assert_eq!(BootEntry::Previous.file_name(), "crownos-recover.conf");
-        assert_eq!(BootEntry::Previous.title(), "Recover the previous version");
-        assert!(LOADER_CONF.starts_with(&format!("default {}\n", BootEntry::Current.file_name())));
-        assert!(LOADER_CONF.contains("timeout menu-hidden\n"));
+    fn refind_conf_hides_the_menu_and_boots_crownos_by_default() {
+        assert_eq!(
+            refind_conf(CMDLINE),
+            "# Written by crownos-installer. crownos-updated writes crownos-rollback.conf.\n\
+             timeout -1\n\
+             use_nvram false\n\
+             scanfor manual,internal,external\n\
+             scan_all_linux_kernels false\n\
+             dont_scan_dirs EFI/CrownOS,EFI/CrownOS/rollback\n\
+             showtools shutdown,reboot,firmware\n\
+             default_selection \"CrownOS\"\n\
+             \n\
+             menuentry \"CrownOS\" {\n\
+             \x20   loader /EFI/CrownOS/vmlinuz-linux-cachyos\n\
+             \x20   initrd /EFI/CrownOS/initramfs-linux-cachyos.img\n\
+             \x20   options \"root=PARTUUID=x rw\"\n\
+             }\n\
+             \n\
+             include crownos-rollback.conf\n"
+        );
     }
 
     #[test]
-    fn the_boot_entry_lives_where_the_loader_default_points() {
-        let current = boot_entry("/mnt", "/efi", "root=PARTUUID=x rw", BootEntry::Current);
-        let (path, contents) = written(&current);
-        assert_eq!(path, "/mnt/efi/loader/entries/crownos.conf");
-        assert!(contents.contains("linux   /EFI/CrownOS/vmlinuz-linux-cachyos\n"));
-        assert!(contents.ends_with("options root=PARTUUID=x rw\n"));
-
-        let previous = boot_entry("/mnt", "/efi", "root=PARTUUID=x rw", BootEntry::Previous);
-        let (path, contents) = written(&previous);
-        assert_eq!(path, "/mnt/efi/loader/entries/crownos-recover.conf");
-        assert!(contents.starts_with("title   Recover the previous version\n"));
-        assert!(contents.contains("linux   /EFI/CrownOS/vmlinuz-linux-cachyos-previous\n"));
-        assert!(contents.contains("initrd  /EFI/CrownOS/initramfs-linux-cachyos-previous.img\n"));
-        assert!(contents.ends_with("options root=PARTUUID=x rw crownos.recover\n"));
+    fn a_quote_in_the_command_line_is_doubled_inside_the_quoted_options() {
+        assert!(
+            refind_conf("root=PARTUUID=x rw dyndbg=\"file x.c +p\"")
+                .contains("    options \"root=PARTUUID=x rw dyndbg=\"\"file x.c +p\"\"\"\n")
+        );
     }
 
     #[test]
-    fn loader_conf_is_written_before_bootctl_can_write_its_stub() {
+    fn both_configs_are_written_after_the_binary_is_installed() {
         for origin in [EspOrigin::Created, EspOrigin::Shared] {
-            let commands = install_bootloader("/mnt", "/efi", "root=PARTUUID=x rw", "x", origin);
-            let log: Vec<String> = commands.iter().map(ToString::to_string).collect();
-            let loader = log
-                .iter()
-                .position(|l| l.contains("loader/loader.conf"))
-                .expect("a loader.conf");
-            let bootctl = log
-                .iter()
-                .position(|l| l.contains("bootctl --esp-path=/efi install"))
-                .expect("bootctl");
-            assert!(loader < bootctl, "{log:?}");
-            let expected_kind = matches!(
-                (&commands[loader], origin),
-                (Cmd::WriteFile { .. }, EspOrigin::Created)
-                    | (Cmd::WriteFileIfAbsent { .. }, EspOrigin::Shared)
+            let log = log(&bootloader(origin));
+            let binary = position(
+                &log,
+                "install -Dm644 /usr/share/refind/refind_x64.efi /efi/EFI/refind/refind_x64.efi",
             );
-            assert!(expected_kind, "{origin:?}: {}", commands[loader]);
-            for entry in BootEntry::ALL {
-                assert!(log.iter().any(|l| l.contains(entry.file_name())), "{log:?}");
-            }
+            let conf = position(&log, "cat > /mnt/efi/EFI/refind/refind.conf <<");
+            let rollback = position(&log, "cat > /mnt/efi/EFI/refind/crownos-rollback.conf <<");
+            assert!(position(&log, "mkdir -p /mnt/efi/EFI/CrownOS/rollback") < binary);
+            assert!(binary < conf && conf < rollback, "{log:?}");
+            assert!(log[rollback].contains(ROLLBACK_CONF_PLACEHOLDER), "{log:?}");
+            position(&log, "cat > /mnt/etc/kernel/cmdline");
+            position(&log, "cat > /mnt/etc/crownos-root-partuuid");
         }
+    }
+
+    #[test]
+    fn a_created_esp_gets_the_fallback_loader_and_a_best_effort_boot_entry() {
+        let commands = bootloader(EspOrigin::Created);
+        let log = log(&commands);
+        position(
+            &log,
+            "install -Dm644 /usr/share/refind/refind_x64.efi /efi/EFI/BOOT/BOOTX64.EFI",
+        );
+        assert!(!log.iter().any(|l| l.contains(BACKUP_SUFFIX)), "{log:?}");
+        let entry = firmware_entry(&commands);
+        assert!(matches!(entry, Cmd::BestEffort(_)), "{entry}");
+        assert!(
+            entry.to_string().starts_with(
+                "efibootmgr --create --disk /dev/sda --part 1 --label CrownOS \
+                 --loader \\EFI\\refind\\refind_x64.efi"
+            ),
+            "{entry}"
+        );
+    }
+
+    #[test]
+    fn a_shared_esp_keeps_its_fallback_and_backs_up_an_existing_config() {
+        let commands = bootloader(EspOrigin::Shared);
+        let log = log(&commands);
+        assert!(!log.iter().any(|l| l.contains("EFI/BOOT")), "{log:?}");
+        let backup = commands
+            .iter()
+            .position(|c| {
+                matches!(c, Cmd::CopyIfPresent { from, to }
+                    if from == "/mnt/efi/EFI/refind/refind.conf"
+                        && to == "/mnt/efi/EFI/refind/refind.conf.crownos-backup")
+            })
+            .unwrap_or_else(|| panic!("no backup in {log:?}"));
+        assert!(backup < position(&log, "cat > /mnt/efi/EFI/refind/refind.conf <<"));
+        let entry = firmware_entry(&commands);
+        assert!(
+            matches!(entry, Cmd::Run { program, .. } if program == "efibootmgr"),
+            "{entry}"
+        );
     }
 
     #[test]
@@ -311,68 +382,43 @@ mod tests {
         assert!(MKINITCPIO_HOOKS.starts_with("HOOKS=(base udev "));
         assert!(MKINITCPIO_HOOKS.contains(" block crownos-recover filesystems "));
         assert!(!MKINITCPIO_HOOKS.contains("consolefont"));
-        let log: Vec<String> = install_kernel("/mnt", "/efi")
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        let drop_in = log
-            .iter()
-            .position(|l| l.contains(MKINITCPIO_DROP_IN))
-            .expect("the drop-in");
-        let rebuild = log
-            .iter()
-            .position(|l| l.contains("mkinitcpio -P"))
-            .expect("a rebuild");
-        assert!(drop_in < rebuild, "{log:?}");
+        let log = log(&install_kernel("/mnt", "/efi"));
+        assert!(position(&log, MKINITCPIO_DROP_IN) < position(&log, "mkinitcpio -P"));
     }
 
     #[test]
-    fn snapper_is_armed_first_and_seeding_is_mandatory_only_on_our_own_esp() {
-        let created = prepare_recovery("/mnt", "/efi", EspOrigin::Created);
-        let (path, contents) = written(&created[0]);
-        assert_eq!(path, "/mnt/etc/conf.d/snapper");
-        assert_eq!(contents, "SNAPPER_CONFIGS=\"root\"\n");
-        let is_seed = |command: &Cmd| command.to_string().contains("crownos-esp-kernel seed");
+    fn snapper_is_armed_first_and_the_finish_unit_is_enabled_without_fail() {
+        let commands = prepare_recovery("/mnt", "/efi");
+        assert!(matches!(&commands[0], Cmd::WriteFile { path, contents }
+            if path == "/mnt/etc/conf.d/snapper" && contents == "SNAPPER_CONFIGS=\"root\"\n"));
         assert!(
-            created
+            commands
                 .iter()
-                .any(|c| is_seed(c) && !matches!(c, Cmd::BestEffort(_)))
+                .any(|c| matches!(c, Cmd::Chroot { program, args, .. }
+            if program == "systemctl" && args == &["enable", RECOVER_FINISH_SERVICE]))
         );
-
-        let shared = prepare_recovery("/mnt", "/efi", EspOrigin::Shared);
         assert!(
-            shared
+            !log(&commands)
                 .iter()
-                .any(|c| is_seed(c) && matches!(c, Cmd::BestEffort(_)))
+                .any(|l| l.contains("crownos-esp-kernel"))
         );
-        assert!(
-            shared
-                .last()
-                .is_some_and(|c| c.to_string().contains("grep -H . /efi/loader/loader.conf"))
-        );
+        assert!(matches!(commands.last(), Some(Cmd::Chroot { program, .. }) if program == "sh"));
     }
 
     #[test]
-    fn the_recovery_finish_service_is_enabled_without_fail_and_verified_on_every_esp() {
-        for origin in [EspOrigin::Created, EspOrigin::Shared] {
-            let commands = prepare_recovery("/mnt", "/efi", origin);
-            let enable = commands
-                .iter()
-                .position(|c| {
-                    matches!(c, Cmd::Chroot { program, args, .. }
-                        if program == "systemctl" && args == &["enable", RECOVER_FINISH_SERVICE])
-                })
-                .expect("the unit is enabled, and not best effort");
-            let seed = commands
-                .iter()
-                .position(|c| c.to_string().contains("crownos-esp-kernel seed"))
-                .expect("a seed");
-            assert!(seed < enable, "{commands:?}");
-            let verification = commands.last().map(ToString::to_string).unwrap_or_default();
-            assert!(
-                verification.contains("systemctl is-enabled crownos-recover-finish.service"),
-                "{verification}"
-            );
-        }
+    fn the_verification_reports_what_the_install_test_asserts() {
+        assert_eq!(
+            verification_script("/efi"),
+            "grep -H . /efi/EFI/refind/refind.conf /efi/EFI/refind/crownos-rollback.conf \
+             /etc/mkinitcpio.conf.d/crownos.conf; \
+             grep -H NUMBER_LIMIT /etc/snapper/configs/root; \
+             grep -H '^Server' /etc/pacman.conf; \
+             printf '%s %s\\n' crownos-recover-finish.service \
+             \"$(systemctl is-enabled crownos-recover-finish.service)\"; \
+             printf '%s %s\\n' crownos-updated.service \
+             \"$(systemctl is-enabled crownos-updated.service)\"; \
+             btrfs subvolume get-default /; \
+             ls /efi/EFI/CrownOS /efi/EFI/refind"
+        );
     }
 }

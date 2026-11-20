@@ -235,11 +235,15 @@ fn rehearse_without_live_image(
     snapshot: &mut engine::probe::SystemSnapshot,
     notes: &mut Vec<String>,
 ) {
-    if snapshot.crownos_repo_key && snapshot.published_packages.is_some() {
+    if snapshot.crownos_repo_key
+        && snapshot.published_packages.is_some()
+        && snapshot.published_version.is_some()
+    {
         return;
     }
     snapshot.crownos_repo_key = true;
     snapshot.published_packages.get_or_insert_with(Vec::new);
+    snapshot.published_version.get_or_insert_with(String::new);
     notes.push(
         "rehearsal: pretending the live image ships the repository key and manifest".to_owned(),
     );

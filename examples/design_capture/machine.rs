@@ -250,6 +250,7 @@ fn snapshot(disks: Vec<Disk>) -> SystemSnapshot {
                 .map(str::to_owned)
                 .to_vec(),
         ),
+        published_version: Some("0.1.12".to_owned()),
         accelerators: vec![Accelerator {
             vendor: AcceleratorVendor::Nvidia,
             kind: AcceleratorKind::Gpu,

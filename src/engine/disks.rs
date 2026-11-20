@@ -968,7 +968,7 @@ fn create_commands(op: &DiskOp) -> Vec<Cmd> {
     });
 
     if kind.needs_esp_flag() {
-        // The `esp` flag is what firmware and `bootctl` look for. `parted` sets
+        // The `esp` flag is what firmware and boot loaders look for. `parted` sets
         // the boot flag alongside it on a GPT disk, which is the same bit.
         commands.push(Cmd::Run {
             program: "parted".to_owned(),

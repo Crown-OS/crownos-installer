@@ -805,15 +805,16 @@ fn failed_install() -> anyhow::Result<Wizard> {
         &mut wizard,
         "Installing the boot loader",
         &[
-            "bootctl install --esp-path=/mnt/boot/efi",
-            "Copied \"/usr/lib/systemd/boot/efi/systemd-bootx64.efi\" to \"/mnt/boot/efi/EFI/systemd/systemd-bootx64.efi\".",
-            "Failed to write 'LoaderSystemToken' EFI variable: No space left on device",
+            "arch-chroot /mnt install -Dm644 /usr/share/refind/refind_x64.efi /efi/EFI/refind/refind_x64.efi",
+            "efibootmgr --create --disk /dev/nvme0n1 --part 1 --label CrownOS --loader \\EFI\\refind\\refind_x64.efi",
+            "Could not prepare Boot variable: No space left on device",
         ],
     )?;
     wizard.on_install_event(Event::Failed {
         index,
-        message: "bootctl exited with status 1: the firmware has no room for another boot entry."
-            .to_owned(),
+        message:
+            "efibootmgr exited with status 5: the firmware has no room for another boot entry."
+                .to_owned(),
     });
     Ok(wizard)
 }

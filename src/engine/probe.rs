@@ -102,9 +102,9 @@ pub trait System {
     fn list_dir(&self, path: &str) -> Result<Vec<String>>;
 
     /// Whether `path` exists. Separate from [`read_file`](Self::read_file)
-    /// because "already there, leave it alone" is a decision the executor makes
-    /// about files it must not clobber — a Windows machine's `loader.conf`, for
-    /// one.
+    /// because "back it up only if it is there" is a decision the executor
+    /// makes about files it must not lose — an existing `refind.conf` on a
+    /// shared ESP, for one.
     fn exists(&self, path: &str) -> bool;
 }
 
@@ -181,6 +181,9 @@ pub struct SystemSnapshot {
     /// The CrownOS packages the live image's copy of the published manifest
     /// lists, or `None` when it has no readable one, which is also a refusal.
     pub published_packages: Option<Vec<String>>,
+    /// The release version of that manifest, which selects the repository
+    /// channel the installed system is pinned to. `None` is a refusal.
+    pub published_version: Option<String>,
     /// Every GPU and NPU on the PCI bus, sorted.
     pub accelerators: Vec<Accelerator>,
     /// Whether the live image's offline repository carries the AI packages. An
@@ -460,16 +463,18 @@ pub fn probe(system: &dyn System) -> Result<SystemSnapshot> {
         .map(|cpuinfo| cpuinfo::microarch(&cpuinfo))
         .unwrap_or_default();
 
+    let published_manifest = system.read_file(MANIFEST_LIVE_PATH).ok();
+
     Ok(SystemSnapshot {
         disks,
         mounts,
         memory_bytes,
         microarch,
         crownos_repo_key: system.exists(REPO_KEY_LIVE_PATH),
-        published_packages: system
-            .read_file(MANIFEST_LIVE_PATH)
-            .ok()
-            .and_then(|published| manifest::package_names(&published)),
+        published_packages: published_manifest
+            .as_deref()
+            .and_then(manifest::package_names),
+        published_version: published_manifest.as_deref().and_then(manifest::version),
         accelerators: read_accelerators(system),
         ai_bundled: system
             .run(

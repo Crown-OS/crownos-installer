@@ -42,7 +42,7 @@ use super::base;
 use super::boot;
 use super::btrfs;
 use super::disks::{self, Filesystem};
-use super::plan::{BOOT_FSLABEL, ESP_FALLBACK_LOADER, Plan, Role, Step};
+use super::plan::{BOOT_FSLABEL, Plan, Role, Step};
 use super::probe::System;
 
 // --- MARK: Secrets ---
@@ -144,14 +144,8 @@ pub enum Cmd {
     },
     /// Write a file, replacing whatever was there.
     WriteFile { path: String, contents: String },
-    /// Write a file only if it does not already exist.
-    ///
-    /// One of the two decisions this module is allowed to make, and only about
-    /// the shared ESP: a `loader.conf` that is already there belongs to
-    /// something else, and replacing it would change how the machine boots into
-    /// its *other* operating system.
-    WriteFileIfAbsent { path: String, contents: String },
-    /// Copy a file, if the source exists. Used to take a backup we may not need.
+    /// Copy a file, if the source exists, and never over an existing copy.
+    /// Used to take a backup we may not need.
     CopyIfPresent { from: String, to: String },
     /// `mkdir -p`.
     MakeDirs { path: String },
@@ -212,8 +206,7 @@ impl fmt::Display for Cmd {
                 }
                 write!(f, " >> {path}")
             }
-            Self::WriteFile { path, contents } => write_display(f, path, contents, false),
-            Self::WriteFileIfAbsent { path, contents } => write_display(f, path, contents, true),
+            Self::WriteFile { path, contents } => write_display(f, path, contents),
             Self::CopyIfPresent { from, to } => write!(f, "cp {from} {to} (if {from} exists)"),
             Self::MakeDirs { path } => write!(f, "mkdir -p {path}"),
             Self::BestEffort(command) => write!(f, "{command}  # allowed to fail"),
@@ -224,30 +217,16 @@ impl fmt::Display for Cmd {
 /// How a file write reads in the log.
 ///
 /// Small files are shown in full, as a heredoc. That is the difference between a
-/// dry run that says "it would write 214 bytes to `loader/entries/crownos.conf`"
+/// dry run that only gives the byte count of `EFI/refind/refind.conf`
 /// and one that shows the boot entry the machine is about to depend on. The cap
 /// exists so that a future step which writes something large cannot turn the log
 /// into the file.
-fn write_display(
-    f: &mut fmt::Formatter<'_>,
-    path: &str,
-    contents: &str,
-    only_if_absent: bool,
-) -> fmt::Result {
-    const INLINE_LIMIT: usize = 512;
-    let guard = if only_if_absent {
-        " (only if absent)"
-    } else {
-        ""
-    };
+fn write_display(f: &mut fmt::Formatter<'_>, path: &str, contents: &str) -> fmt::Result {
+    const INLINE_LIMIT: usize = 1024;
     if contents.len() <= INLINE_LIMIT {
-        write!(
-            f,
-            "cat > {path}{guard} <<'EOF'\n{}EOF",
-            ensure_newline(contents)
-        )
+        write!(f, "cat > {path} <<'EOF'\n{}EOF", ensure_newline(contents))
     } else {
-        write!(f, "cat > {path}{guard}  # {} bytes", contents.len())
+        write!(f, "cat > {path}  # {} bytes", contents.len())
     }
 }
 
@@ -316,14 +295,6 @@ impl Cmd {
             Self::WriteFile { path, contents } => {
                 system.write_file(path, contents)?;
                 Ok(String::new())
-            }
-            Self::WriteFileIfAbsent { path, contents } => {
-                if system.exists(path) {
-                    Ok(format!("{path} already exists — left alone"))
-                } else {
-                    system.write_file(path, contents)?;
-                    Ok(String::new())
-                }
             }
             Self::CopyIfPresent { from, to } => {
                 if system.exists(from) {
@@ -549,7 +520,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             vec![base::configure_repositories(root, *microarch)]
         }
 
-        Step::AddCrownosRepository { root } => base::add_crownos_repository(root),
+        Step::AddCrownosRepository { root, channel } => base::add_crownos_repository(root, channel),
 
         Step::GenerateFstab { root } => vec![Cmd::RunAppendingTo {
             program: "genfstab".to_owned(),
@@ -602,35 +573,28 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             },
         ],
 
-        Step::BackUpFallbackBootloader { esp_at, .. } => vec![
-            // `bootctl install` may write the removable-media fallback loader.
-            // On a machine whose firmware boots that path by preference, losing
-            // whatever was there is losing the ability to boot Windows — so a
-            // copy is taken first, and `--no-clobber` in `CopyIfPresent` means a
-            // second install never overwrites the original backup.
-            Cmd::CopyIfPresent {
-                from: format!("{esp_at}/{ESP_FALLBACK_LOADER}"),
-                to: format!("{esp_at}/{ESP_FALLBACK_LOADER}.crownos-backup"),
-            },
-        ],
-
         Step::InstallBootloader {
             root,
             esp_rel,
             root_partuuid,
             kernel_cmdline,
             origin,
+            disk,
+            esp_number,
             ..
-        } => boot::install_bootloader(root, esp_rel, kernel_cmdline, root_partuuid, *origin),
+        } => boot::install_bootloader(
+            root,
+            esp_rel,
+            kernel_cmdline,
+            root_partuuid,
+            *origin,
+            disk,
+            *esp_number,
+        ),
 
         Step::InstallKernel { root, esp_rel, .. } => boot::install_kernel(root, esp_rel),
 
-        Step::PrepareRecovery {
-            root,
-            esp_rel,
-            origin,
-            ..
-        } => boot::prepare_recovery(root, esp_rel, *origin),
+        Step::PrepareRecovery { root, esp_rel, .. } => boot::prepare_recovery(root, esp_rel),
 
         Step::CreateUser {
             root,
@@ -954,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn the_esp_loader_config_is_only_written_when_absent() {
+    fn a_shared_esp_boots_refind_through_a_firmware_entry_that_must_not_fail() {
         let plan = a_plan();
         let step = plan
             .steps
@@ -962,88 +926,55 @@ mod tests {
             .find(|s| matches!(s, Step::InstallBootloader { .. }))
             .expect("a bootloader step");
         let commands = commands_for(&plan, &secrets(), step);
-        assert!(commands.iter().any(|c| matches!(
-            c,
-            Cmd::WriteFileIfAbsent { path, .. } if path.ends_with("loader/loader.conf")
-        )));
-        // Our own entries, on the other hand, are ours to overwrite.
-        for entry in [
-            "loader/entries/crownos.conf",
-            "loader/entries/crownos-recover.conf",
-        ] {
-            assert!(commands.iter().any(|c| matches!(
-                c,
-                Cmd::WriteFile { path, .. } if path.ends_with(entry)
-            )));
-        }
+        let entry = format!(
+            "efibootmgr --create --disk {} --part {} --label CrownOS",
+            plan.disk, plan.esp.number
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, Cmd::Run { .. }) && c.to_string().starts_with(&entry)),
+            "{commands:?}"
+        );
         let position = |needle: &str| {
             commands
                 .iter()
                 .position(|c| c.to_string().contains(needle))
                 .unwrap_or_else(|| panic!("{needle} missing"))
         };
-        assert!(position("loader/loader.conf") < position("bootctl --esp-path=/efi install"));
-        // And nothing goes near Windows' own directory.
+        assert!(
+            position("refind.conf.crownos-backup")
+                < position("cat > /mnt/efi/EFI/refind/refind.conf")
+        );
         for command in &commands {
-            assert!(!command.to_string().contains("EFI/Microsoft"), "{command}");
+            let line = command.to_string();
+            assert!(
+                !line.contains("EFI/Microsoft") && !line.contains("EFI/BOOT"),
+                "{line}"
+            );
         }
     }
 
-    /// The executor is allowed exactly one decision — "leave it alone if it is
-    /// already there" — and this is proof it makes it the safe way round. A
-    /// `loader.conf` already on the shared ESP decides what this machine boots,
-    /// including into Windows.
     #[test]
-    fn an_existing_loader_config_is_left_alone() {
-        let path = "/mnt/efi/loader/loader.conf";
-        let command = Cmd::WriteFileIfAbsent {
-            path: path.to_owned(),
-            contents: "default crownos.conf\n".to_owned(),
+    fn a_backup_is_taken_only_of_a_file_that_is_there_and_never_over_an_older_one() {
+        let from = "/mnt/efi/EFI/refind/refind.conf";
+        let to = "/mnt/efi/EFI/refind/refind.conf.crownos-backup";
+        let command = Cmd::CopyIfPresent {
+            from: from.to_owned(),
+            to: to.to_owned(),
         };
+        let copy = format!("cp --no-clobber -- {from} {to}");
 
-        let present = fixture::FakeSystem::new().with_existing(path);
-        let note = command.apply(&present).expect("apply");
-        assert!(note.contains("left alone"), "{note}");
-        assert!(
-            present
-                .journal()
-                .iter()
-                .all(|line| !line.starts_with("write")),
-            "nothing should have been written: {:?}",
-            present.journal()
-        );
+        let present = fixture::FakeSystem::new()
+            .with_existing(from)
+            .with_command(&copy, "");
+        command.apply(&present).expect("apply");
+        assert_eq!(present.journal(), vec![copy]);
 
         let absent = fixture::FakeSystem::new();
-        command.apply(&absent).expect("apply");
-        assert!(
-            absent
-                .journal()
-                .iter()
-                .any(|line| line.starts_with("write")),
-            "{:?}",
-            absent.journal()
-        );
-    }
-
-    #[test]
-    fn the_existing_fallback_loader_is_backed_up_before_bootctl_runs() {
-        let plan = a_plan();
-        let labels: Vec<String> = plan.steps.iter().map(Step::label).collect();
-        let backup = labels
-            .iter()
-            .position(|l| l.contains("Backing up"))
-            .expect("a backup step");
-        let install = labels
-            .iter()
-            .position(|l| l == "Installing the boot loader")
-            .expect("an install step");
-        assert!(backup < install, "{labels:?}");
-
-        let commands = commands_for(&plan, &secrets(), &plan.steps[backup]);
-        assert!(commands.iter().any(|c| matches!(
-            c,
-            Cmd::CopyIfPresent { to, .. } if to.ends_with(".crownos-backup")
-        )));
+        let note = command.apply(&absent).expect("apply");
+        assert!(note.contains("nothing to back up"), "{note}");
+        assert!(absent.journal().is_empty(), "{:?}", absent.journal());
     }
 
     /// A committing run against the fake system, to prove the command paths
@@ -1172,22 +1103,6 @@ mod tests {
             .find("gpgconf --homedir /mnt/etc/pacman.d/gnupg --kill all")
             .expect("the keyring daemons are stopped");
         assert!(stop_gnupg < umount, "{log}");
-    }
-
-    #[test]
-    fn seeding_the_recovery_kernel_is_best_effort_on_a_shared_esp() {
-        let plan = a_plan();
-        let step = plan
-            .steps
-            .iter()
-            .find(|s| matches!(s, Step::PrepareRecovery { .. }))
-            .expect("a recovery step");
-        let commands = commands_for(&plan, &secrets(), step);
-        let seed = commands
-            .iter()
-            .find(|c| c.to_string().contains("crownos-esp-kernel seed"))
-            .expect("a seed");
-        assert!(matches!(seed, Cmd::BestEffort(_)), "{seed}");
     }
 
     #[test]

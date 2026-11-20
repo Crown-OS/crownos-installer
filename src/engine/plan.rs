@@ -61,6 +61,7 @@ use std::fmt;
 
 use crate::oobe::{AiFeatures, Locale, Oobe, StagingKind, SwapPlan, UserAccount, WindowsApps};
 use crate::util::cpuinfo::Microarch;
+use crate::util::manifest;
 
 use super::ai::{self, AiPlan};
 use super::base;
@@ -99,8 +100,8 @@ pub const REGION_TOLERANCE: u64 = 64 * MIB;
 pub const MIN_ROOT_BYTES: u64 = 10 * GIB;
 
 /// Below this, a shared ESP gets a warning: it may hold one kernel and one
-/// initramfs alongside Windows' boot loader, and not the second pair "Recover
-/// the previous version" boots.
+/// initramfs alongside Windows' boot loader, and not the second pair the
+/// rollback entry boots.
 pub const COMFORTABLE_ESP_BYTES: u64 = 300 * MIB;
 
 /// The boot partition an ISO install creates: room for several kernels and
@@ -142,12 +143,8 @@ pub const ROOT_FSLABEL: &str = "crownos";
 /// Directory on the ESP that CrownOS owns, relative to the ESP root.
 ///
 /// Everything this installer writes to the shared ESP goes under here or under
-/// `loader/`. Nothing goes near `EFI/Microsoft`.
+/// `EFI/refind`. Nothing goes near `EFI/Microsoft` or `EFI/BOOT`.
 pub const ESP_CROWNOS_DIR: &str = "EFI/CrownOS";
-
-/// The one path on the shared ESP that `bootctl install` may overwrite, and
-/// which is therefore backed up first. See [`Step::BackUpFallbackBootloader`].
-pub const ESP_FALLBACK_LOADER: &str = "EFI/BOOT/BOOTX64.EFI";
 
 // --- MARK: Account ---
 
@@ -504,6 +501,8 @@ impl NewPartition {
 /// An existing partition the plan refers to but (mostly) does not change.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExistingPartition {
+    /// Partition number in the GPT.
+    pub number: u32,
     pub path: String,
     pub partuuid: String,
     pub size_bytes: u64,
@@ -515,7 +514,6 @@ pub enum Reclaim {
     /// Delete it and grow the root partition over it.
     GrowRootOver {
         staging: ExistingPartition,
-        staging_number: u32,
         /// Root's new last sector, inclusive.
         new_root_end_sector: u64,
     },
@@ -678,8 +676,9 @@ pub enum Step {
     /// Point the new system at the repositories it updates from, preferring
     /// the CachyOS builds its CPU runs.
     ConfigureRepositories { root: String, microarch: Microarch },
-    /// Trust the CrownOS repository and list it for updates.
-    AddCrownosRepository { root: String },
+    /// Trust the CrownOS repository and list it for updates, pinned to the
+    /// `channel` of the release this image installs.
+    AddCrownosRepository { root: String, channel: String },
     /// Record the AI stack chosen for this machine and fetch the parts of it
     /// the live image could not bundle.
     ConfigureAiAcceleration { root: String, plan: AiPlan },
@@ -700,9 +699,8 @@ pub enum Step {
     ConfigureTimezone { root: String, timezone: String },
     /// `/etc/hostname` and `/etc/hosts`.
     ConfigureHostname { root: String, hostname: String },
-    /// Copy the ESP's fallback loader aside before `bootctl` can overwrite it.
-    BackUpFallbackBootloader { device: String, esp_at: String },
-    /// `bootctl install`, `loader.conf` and both loader entries.
+    /// rEFInd, `refind.conf`, the empty rollback include and a firmware boot
+    /// entry for partition `esp_number` of `disk`.
     InstallBootloader {
         device: String,
         root: String,
@@ -710,9 +708,10 @@ pub enum Step {
         root_partuuid: String,
         kernel_cmdline: String,
         origin: EspOrigin,
+        disk: String,
+        esp_number: u32,
     },
-    /// Put the kernel and initramfs on the ESP, where systemd-boot can read
-    /// them.
+    /// Put the kernel and initramfs on the ESP, where rEFInd can read them.
     InstallKernel {
         device: String,
         root: String,
@@ -732,14 +731,13 @@ pub enum Step {
     LockRootAccount { root: String },
     /// Sign the user in on tty1 at boot, which opens the desktop.
     EnableAutologin { root: String, username: String },
-    /// Arm snapper and seed the kernel "Recover the previous version" boots.
-    /// After every transaction the install itself runs, so none of them is
-    /// snapshotted and the seeded kernel is the one finally installed.
+    /// Arm snapper and enable the unit that finishes a rollback. The last step
+    /// inside the new system, so no install-time transaction is snapshotted
+    /// and its verification output shows the final state.
     PrepareRecovery {
         device: String,
         root: String,
         esp_rel: String,
-        origin: EspOrigin,
     },
     /// `systemctl enable`.
     EnableServices { root: String, units: Vec<String> },
@@ -831,9 +829,6 @@ impl Step {
             Self::ConfigureKeymap { .. } => "Setting the keyboard layout".to_owned(),
             Self::ConfigureTimezone { .. } => "Setting the time zone".to_owned(),
             Self::ConfigureHostname { .. } => "Naming the computer".to_owned(),
-            Self::BackUpFallbackBootloader { .. } => {
-                "Backing up the existing boot loader".to_owned()
-            }
             Self::InstallBootloader { .. } => "Installing the boot loader".to_owned(),
             Self::InstallKernel { .. } => "Installing the kernel".to_owned(),
             Self::CreateUser { username, .. } => format!("Creating the account for {username}"),
@@ -866,8 +861,7 @@ impl Step {
             | Self::GrowRootFilesystem { device, .. } => Impact::Destructive(device),
             Self::DeleteStagingPartition { device, .. }
             | Self::GrowRootPartition { device, .. } => Impact::Destructive(device),
-            Self::BackUpFallbackBootloader { device, .. }
-            | Self::InstallBootloader { device, .. }
+            Self::InstallBootloader { device, .. }
             | Self::InstallKernel { device, .. }
             | Self::PrepareRecovery { device, .. } => Impact::FileLevel(device),
             _ => Impact::None,
@@ -997,13 +991,14 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
     if oobe.target.esp_size_bytes < COMFORTABLE_ESP_BYTES {
         warnings.push(format!(
             "The shared EFI partition is only {}. CrownOS needs room for its kernel \
-             and the copy kept for 'Recover the previous version'; on this partition \
-             the recovery copy may not fit, so that menu entry may be unavailable.",
+             and the copy kept for the rollback entry; on this partition the rollback \
+             copy may not fit, so that menu entry may be unavailable.",
             bytes(oobe.target.esp_size_bytes)
         ));
     }
 
     let esp_record = ExistingPartition {
+        number: esp.number,
         path: esp.path.clone(),
         partuuid: esp.partuuid.clone().unwrap_or_default(),
         size_bytes: disk.bytes(esp.sectors),
@@ -1032,6 +1027,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
         },
         esp: esp_record,
         windows: Some(ExistingPartition {
+            number: windows.number,
             path: windows.path.clone(),
             partuuid: windows.partuuid.clone().unwrap_or_default(),
             size_bytes: disk.bytes(windows.sectors),
@@ -1057,7 +1053,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
 }
 
 /// Every installed system updates from the CrownOS repository, so an image
-/// without its key or its manifest cannot install one.
+/// without its key, its manifest or the manifest's release version cannot
+/// install one.
 fn check_image(snapshot: &SystemSnapshot) -> Result<(), Refusal> {
     if !snapshot.crownos_repo_key {
         return Err(Refusal::IncompleteImage {
@@ -1068,6 +1065,12 @@ fn check_image(snapshot: &SystemSnapshot) -> Result<(), Refusal> {
     if snapshot.published_packages.is_none() {
         return Err(Refusal::IncompleteImage {
             missing: "package manifest",
+            path: base::MANIFEST_LIVE_PATH,
+        });
+    }
+    if snapshot.published_version.is_none() {
+        return Err(Refusal::IncompleteImage {
+            missing: "release version",
             path: base::MANIFEST_LIVE_PATH,
         });
     }
@@ -1414,11 +1417,11 @@ fn decide_reclaim(
     let new_end = align_down(staging.end_sector() + 1, align).saturating_sub(1);
     Reclaim::GrowRootOver {
         staging: ExistingPartition {
+            number: staging.number,
             path: staging.path.clone(),
             partuuid: staging.partuuid.clone().unwrap_or_default(),
             size_bytes: disk.bytes(staging.sectors),
         },
-        staging_number: staging.number,
         new_root_end_sector: new_end,
     }
 }
@@ -1479,31 +1482,21 @@ fn build_steps(
     });
     steps.push(Step::MountEsp {
         device: esp.path.clone(),
-        at: esp_mount.clone(),
+        at: esp_mount,
     });
-    // Before anything is installed: a base's package scripts may run
-    // `bootctl` themselves the moment the ESP is visible inside the target.
-    // A boot partition this install just formatted has nothing to back up.
-    if layout.boot.is_none() {
-        steps.push(Step::BackUpFallbackBootloader {
-            device: esp.path.clone(),
-            esp_at: esp_mount,
-        });
-    }
 
-    steps.extend(system_steps(oobe, layout, esp, account, snapshot));
+    steps.extend(system_steps(disk, oobe, layout, esp, account, snapshot));
 
     steps.push(Step::Unmount { at: root_mount });
 
     if let Reclaim::GrowRootOver {
         staging,
-        staging_number,
         new_root_end_sector,
     } = reclaim
     {
         steps.push(Step::DeleteStagingPartition {
             disk: disk.path.clone(),
-            number: *staging_number,
+            number: staging.number,
             device: staging.path.clone(),
             partuuid: staging.partuuid.clone(),
         });
@@ -1526,6 +1519,7 @@ fn build_steps(
 
 /// Everything between mounting the target and unmounting it.
 fn system_steps(
+    disk: &Disk,
     oobe: &Oobe,
     layout: &Layout,
     esp: &ExistingPartition,
@@ -1593,6 +1587,8 @@ fn system_steps(
             root_partuuid: layout.root.partuuid.clone(),
             kernel_cmdline: format!("root=PARTUUID={} rw", layout.root.partuuid),
             origin: esp_origin,
+            disk: disk.path.clone(),
+            esp_number: esp.number,
         },
         Step::InstallKernel {
             device: esp.path.clone(),
@@ -1637,30 +1633,34 @@ fn system_steps(
             plan,
         });
     }
+    let windows_apps =
+        (oobe.install.windows_apps == WindowsApps::Enabled).then_some(base::WINDOWS_APPS_SERVICE);
     // After the best-effort online transactions above: a `[crownos]` listed
     // before its server resolves would make each of them fail at the
     // database sync.
     steps.extend([
-        Step::AddCrownosRepository { root: root.clone() },
+        Step::AddCrownosRepository {
+            root: root.clone(),
+            channel: manifest::channel_for(
+                snapshot.published_version.as_deref().unwrap_or_default(),
+            ),
+        },
+        Step::EnableServices {
+            root: root.clone(),
+            units: base::SERVICES
+                .iter()
+                .copied()
+                .chain(switcheroo)
+                .chain(windows_apps)
+                .map(str::to_owned)
+                .collect(),
+        },
         Step::PrepareRecovery {
             device: esp.path.clone(),
-            root: root.clone(),
+            root,
             esp_rel: ESP_MOUNT_REL.to_owned(),
-            origin: esp_origin,
         },
     ]);
-    let windows_apps =
-        (oobe.install.windows_apps == WindowsApps::Enabled).then_some(base::WINDOWS_APPS_SERVICE);
-    steps.push(Step::EnableServices {
-        root,
-        units: base::SERVICES
-            .iter()
-            .copied()
-            .chain(switcheroo)
-            .chain(windows_apps)
-            .map(str::to_owned)
-            .collect(),
-    });
     steps
 }
 
@@ -1890,6 +1890,7 @@ pub fn plan_iso(input: &IsoInput<'_>) -> Result<Plan, Refusal> {
         .as_ref()
         .expect("lay_out places a boot partition whenever it is given a size");
     let esp_record = ExistingPartition {
+        number: boot.number,
         path: boot.path.clone(),
         partuuid: boot.partuuid.clone(),
         size_bytes: boot.size_bytes(),
@@ -2234,8 +2235,8 @@ mod tests {
         assert!(index("Installing the kernel") < index("Creating the account"));
         assert!(index("Creating the account") < index("Setting the password"));
         assert!(index("Setting the password") < index("Enabling services"));
-        assert!(index("Setting up recovery") < index("Enabling services"));
-        assert!(index("Enabling services") < index("Unmounting the new system"));
+        assert!(index("Enabling services") < index("Setting up recovery"));
+        assert!(index("Setting up recovery") < index("Unmounting the new system"));
 
         for needle in [
             "Setting the language",
@@ -2244,7 +2245,6 @@ mod tests {
             "Naming the computer",
             "Creating the swap file",
             "Locking the root account",
-            "Backing up the existing boot loader",
         ] {
             let _ = index(needle);
         }
@@ -2728,14 +2728,13 @@ mod tests {
 
         let Reclaim::GrowRootOver {
             staging,
-            staging_number,
             new_root_end_sector,
         } = &plan.reclaim
         else {
             panic!("expected a reclaim, got {:?}", plan.reclaim);
         };
         assert_eq!(staging.path, "/dev/sda4");
-        assert_eq!(*staging_number, 4);
+        assert_eq!(staging.number, 4);
         assert!(*new_root_end_sector > plan.root.end_sector);
 
         // And the steps for it come last, after the unmount.
@@ -2935,7 +2934,8 @@ mod tests {
             memory_bytes: 0,
             microarch: Microarch::Generic,
             crownos_repo_key: true,
-            published_packages: crate::util::manifest::package_names(fixture::FIXTURE_MANIFEST),
+            published_packages: manifest::package_names(fixture::FIXTURE_MANIFEST),
+            published_version: manifest::version(fixture::FIXTURE_MANIFEST),
             edits: Vec::new(),
             accelerators: Vec::new(),
             ai_features: AiFeatures::Disabled,
@@ -2947,6 +2947,7 @@ mod tests {
         snapshot.microarch = target.microarch;
         snapshot.crownos_repo_key = target.crownos_repo_key;
         snapshot.published_packages = target.published_packages;
+        snapshot.published_version = target.published_version;
         plan_iso(&IsoInput {
             snapshot: &snapshot,
             disk: target.disk,
@@ -2970,6 +2971,7 @@ mod tests {
         microarch: Microarch,
         crownos_repo_key: bool,
         published_packages: Option<Vec<String>>,
+        published_version: Option<String>,
         edits: Vec<crate::engine::disks::DiskOp>,
         accelerators: Vec<crate::util::pci::Accelerator>,
         ai_features: AiFeatures,
@@ -3436,15 +3438,11 @@ mod tests {
         let format = position(|s| matches!(s, Step::MakeEsp { .. }));
         let mount = position(|s| matches!(s, Step::MountEsp { .. }));
         assert!(format.is_some() && format < mount);
-        assert_eq!(
-            position(|s| matches!(s, Step::BackUpFallbackBootloader { .. })),
-            None
-        );
         assert!(commands(&plan).contains("mkfs.fat -F 32 -n CROWNBOOT /dev/sda5"));
     }
 
     #[test]
-    fn arch_is_pacstrapped_offline_and_boots_from_its_own_loader_entry() {
+    fn arch_is_pacstrapped_offline_boots_through_refind_and_updates_from_its_release() {
         let log = commands(&iso_plan_with(|_| {}).expect("a plan"));
         for expected in [
             "pacstrap -C /etc/pacman.d/crownos-offline.conf -c -K /mnt",
@@ -3455,9 +3453,11 @@ mod tests {
             "crownos-release",
             "crownos-keyring",
             "mkinitcpio -P",
-            "loader/entries/crownos.conf",
-            "loader/entries/crownos-recover.conf",
-            "timeout menu-hidden",
+            " refind ",
+            "cat > /mnt/efi/EFI/refind/refind.conf",
+            "timeout -1",
+            "Server = https://repo.crownos.org/v0.1.12/$arch",
+            "crownos-updated.service",
             "%wheel ALL=(ALL:ALL) ALL",
             "systemctl enable NetworkManager.service systemd-timesyncd.service",
             "snapper-cleanup.timer",
@@ -3504,7 +3504,7 @@ mod tests {
     }
 
     #[test]
-    fn the_installers_own_esp_gets_a_hidden_menu_and_the_recovery_entry() {
+    fn the_installers_own_esp_gets_a_hidden_menu_and_the_fallback_loader() {
         let plan = iso_plan_with(|_| {}).expect("a plan");
         let step = &plan.steps[position_of(&plan, |s| {
             matches!(
@@ -3520,36 +3520,30 @@ mod tests {
         };
         let commands = crate::engine::exec::commands_for(&plan, &secrets, step);
         let log: Vec<String> = commands.iter().map(ToString::to_string).collect();
-        let loader = log
-            .iter()
-            .position(|l| l.contains("/mnt/efi/loader/loader.conf"))
-            .expect("loader.conf");
-        let bootctl = log
-            .iter()
-            .position(|l| l.contains("bootctl --esp-path=/efi install"))
-            .expect("bootctl");
-        assert!(loader < bootctl, "{log:?}");
-        assert!(matches!(
-            commands[loader],
-            crate::engine::exec::Cmd::WriteFile { .. }
-        ));
-        assert!(log[loader].contains("timeout menu-hidden"));
-
-        let root_option = format!("options root=PARTUUID={} rw", plan.root.partuuid);
-        let current = log
-            .iter()
-            .find(|l| l.contains("loader/entries/crownos.conf"))
-            .expect("the default entry");
-        let recover = log
-            .iter()
-            .find(|l| l.contains("loader/entries/crownos-recover.conf"))
-            .expect("the recovery entry");
-        assert!(current.contains(&format!("{root_option}\n")), "{current}");
+        let find = |needle: &str| {
+            log.iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("`{needle}` missing from {log:?}"))
+        };
+        let conf = &log[find("cat > /mnt/efi/EFI/refind/refind.conf <<")];
+        assert!(conf.contains("timeout -1\n"), "{conf}");
         assert!(
-            recover.contains(&format!("{root_option} crownos.recover\n")),
-            "{recover}"
+            conf.contains(&format!(
+                "options \"root=PARTUUID={} rw\"\n",
+                plan.root.partuuid
+            )),
+            "{conf}"
         );
-        assert_eq!(recover.matches("-previous").count(), 2, "{recover}");
+        find("/efi/EFI/BOOT/BOOTX64.EFI");
+        let boot = plan.boot_partition.as_ref().expect("a boot partition");
+        let entry = &commands[find(&format!(
+            "efibootmgr --create --disk {} --part {} ",
+            plan.disk, boot.number
+        ))];
+        assert!(
+            matches!(entry, crate::engine::exec::Cmd::BestEffort(_)),
+            "{entry}"
+        );
     }
 
     #[test]
@@ -3623,10 +3617,14 @@ mod tests {
             position_of(&plan, |s| matches!(s, Step::ConfigureGraphics { .. })),
             position_of(&plan, |s| matches!(s, Step::ConfigureAiAcceleration { .. })),
             position_of(&plan, |s| matches!(s, Step::AddCrownosRepository { .. })),
+            position_of(&plan, |s| matches!(s, Step::EnableServices { .. })),
         ] {
             assert!(earlier < recovery);
         }
-        assert!(recovery < position_of(&plan, |s| matches!(s, Step::EnableServices { .. })));
+        assert_eq!(
+            recovery + 1,
+            position_of(&plan, |s| matches!(s, Step::Unmount { .. }))
+        );
         let log = commands(&plan);
         let armed = log
             .find("SNAPPER_CONFIGS=\"root\"")
@@ -3636,15 +3634,39 @@ mod tests {
     }
 
     #[test]
-    fn seeding_the_recovery_kernel_is_mandatory_on_the_installers_own_esp() {
-        let plan = iso_plan_with(|_| {}).expect("a plan");
-        let log = commands(&plan);
-        let seed = log
-            .lines()
-            .find(|line| line.contains("crownos-esp-kernel seed"))
-            .expect("the -previous kernel is seeded");
-        assert!(!seed.contains("allowed to fail"), "{seed}");
-        assert!(seed.contains("CROWNOS_ESP=/efi"), "{seed}");
+    fn the_crownos_repository_is_pinned_to_the_channel_of_the_installed_release() {
+        let channel_of = |plan: &Plan| {
+            plan.steps
+                .iter()
+                .find_map(|step| match step {
+                    Step::AddCrownosRepository { channel, .. } => Some(channel.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no repository step in {:?}", plan.steps))
+        };
+        let release = iso_plan_with(|_| {}).expect("a plan");
+        assert_eq!(channel_of(&release), "v0.1.12");
+        let testing = iso_plan_with(|target| {
+            target.published_version = Some("0.1.12.r4.g1a2b3c4".to_owned());
+        })
+        .expect("a plan");
+        assert_eq!(channel_of(&testing), "testing");
+    }
+
+    #[test]
+    fn an_image_whose_manifest_has_no_version_is_refused() {
+        let refusal = iso_plan_with(|target| target.published_version = None)
+            .expect_err("no version, no pinned channel");
+        assert!(
+            matches!(
+                refusal,
+                Refusal::IncompleteImage {
+                    missing: "release version",
+                    path: base::MANIFEST_LIVE_PATH,
+                }
+            ),
+            "{refusal:?}"
+        );
     }
 
     // --- MARK: The editor's authorization ---

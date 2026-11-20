@@ -25,12 +25,13 @@ pub const REPO_KEY_UID: &str = "packages@crownos.org";
 /// the complete set of CrownOS components an installed system must have.
 pub const MANIFEST_LIVE_PATH: &str = "/usr/share/crownos/manifest.toml";
 
-/// Installed whatever the manifest says: the snapshot stack, the system
-/// defaults with the boot recovery hooks, the release identity and the key
-/// the repository is signed with.
+/// Installed whatever the manifest says: the snapshot stack, the boot loader,
+/// the system defaults with the boot recovery hooks, the release identity and
+/// the key the repository is signed with.
 pub const REQUIRED_CROWNOS: &[&str] = &[
     "snapper",
     "snap-pac",
+    "refind",
     "crownos-base",
     "crownos-release",
     "crownos-keyring",
@@ -51,6 +52,7 @@ pub const SERVICES: &[&str] = &[
     "systemd-timesyncd.service",
     "power-profiles-daemon.service",
     "snapper-cleanup.timer",
+    "crownos-updated.service",
 ];
 
 /// Installs Wine on the first boot that is online. Shipped by crownos-base.
@@ -162,9 +164,11 @@ pub fn configure_repositories(root: &str, microarch: Microarch) -> Cmd {
 }
 
 /// Trust the CrownOS repository, so the installed system updates from it.
-/// Listed last, after the CachyOS and Arch repositories, and on the stable
-/// channel, which moves only when an ISO is released.
-pub fn add_crownos_repository(root: &str) -> Vec<Cmd> {
+/// Listed last, after the CachyOS and Arch repositories, and pinned to
+/// `channel`, which serves only the release this image installs. A plain
+/// `pacman -Syu` therefore never skips a release; crownos-updated moves the
+/// pin one release at a time.
+pub fn add_crownos_repository(root: &str, channel: &str) -> Vec<Cmd> {
     vec![
         Cmd::run(
             "install",
@@ -182,7 +186,7 @@ pub fn add_crownos_repository(root: &str) -> Vec<Cmd> {
                 "\\n%s\\n%s\\n%s\\n".to_owned(),
                 "[crownos]".to_owned(),
                 "SigLevel = Required DatabaseOptional".to_owned(),
-                format!("Server = {REPO_URL}/stable/$arch"),
+                format!("Server = {REPO_URL}/{channel}/$arch"),
             ],
             path: format!("{root}/etc/pacman.conf"),
             filter: None,
@@ -244,7 +248,7 @@ mod tests {
 
     #[test]
     fn the_installed_system_updates_from_the_crownos_repository() {
-        let log: String = add_crownos_repository("/mnt")
+        let log: String = add_crownos_repository("/mnt", "v0.4.2")
             .iter()
             .map(|command| format!("{command}\n"))
             .collect();
@@ -253,7 +257,7 @@ mod tests {
             REPO_KEY_LIVE_PATH,
             "/mnt/etc/pacman.conf",
             "SigLevel = Required DatabaseOptional",
-            "Server = https://repo.crownos.org/stable/$arch",
+            "Server = https://repo.crownos.org/v0.4.2/$arch",
             "printf \\n%s\\n%s\\n%s\\n [crownos]",
         ] {
             assert!(log.contains(expected), "{expected} missing from {log}");
