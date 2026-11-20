@@ -7,6 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -21,9 +22,11 @@ pub struct FakeSystem {
     command_writes: HashMap<String, Vec<(PathBuf, String)>>,
     is_online: bool,
     installed_packages: RefCell<BTreeSet<String>>,
+    programs: BTreeSet<String>,
     files: RefCell<BTreeMap<PathBuf, String>>,
     directories: RefCell<BTreeSet<PathBuf>>,
     links: RefCell<BTreeMap<PathBuf, PathBuf>>,
+    racing_links: BTreeMap<PathBuf, PathBuf>,
     modification_times: RefCell<BTreeMap<PathBuf, SystemTime>>,
     modification_count: Cell<u64>,
     /// Each call, in order: `run <command line>`, `write <path>`,
@@ -49,6 +52,23 @@ impl FakeSystem {
 
     pub fn with_link(self, link: impl Into<PathBuf>, target: impl Into<PathBuf>) -> Self {
         self.links.borrow_mut().insert(link.into(), target.into());
+        self
+    }
+
+    /// Puts the program `name` on `PATH`, as `/usr/bin/<name>`.
+    pub fn with_program(mut self, name: &str) -> Self {
+        self.programs.insert(name.to_owned());
+        self
+    }
+
+    /// Makes the link `link` to `target` just before a [`System::symlink`]
+    /// call for `link`, like another process that links at the same time.
+    pub fn with_racing_link(
+        mut self,
+        link: impl Into<PathBuf>,
+        target: impl Into<PathBuf>,
+    ) -> Self {
+        self.racing_links.insert(link.into(), target.into());
         self
     }
 
@@ -269,6 +289,16 @@ impl System for FakeSystem {
             || self.links.borrow().contains_key(path)
     }
 
+    fn is_directory(&self, path: &Path) -> bool {
+        self.directories.borrow().contains(path)
+    }
+
+    fn find_program(&self, name: &str) -> Option<PathBuf> {
+        self.programs
+            .contains(name)
+            .then(|| Path::new("/usr/bin").join(name))
+    }
+
     fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>, TaskError> {
         let files = self.files.borrow();
         let directories = self.directories.borrow();
@@ -319,6 +349,14 @@ impl System for FakeSystem {
     }
 
     fn symlink(&self, target: &Path, link: &Path) -> Result<(), TaskError> {
+        if let Some(racing_target) = self.racing_links.get(link) {
+            self.links
+                .borrow_mut()
+                .insert(link.to_owned(), racing_target.clone());
+        }
+        if self.exists(link) {
+            return Err(TaskError::io(link, io::ErrorKind::AlreadyExists.into()));
+        }
         self.record(format!(
             "symlink {} -> {}",
             link.display(),

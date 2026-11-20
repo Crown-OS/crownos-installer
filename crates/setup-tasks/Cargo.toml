@@ -10,4 +10,10 @@ fake = []
 [dependencies]
 crownos-config = { workspace = true }
 ron = { workspace = true }
+serde = { workspace = true }
+# `preserve_order` keeps the key order of the agent files that the merge rewrites.
+serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
+# Edits `~/.codex/config.toml` and keeps its comments and formatting.
+toml_edit = { workspace = true }
+tracing = { workspace = true }

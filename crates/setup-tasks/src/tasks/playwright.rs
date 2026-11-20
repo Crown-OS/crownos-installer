@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use crownos_config::system::{
-    Browser, PLAYWRIGHT_BROWSERS_PATH, PLAYWRIGHT_PREFIX, SetupConfig, SetupTask,
+    Browser, PLAYWRIGHT_BROWSERS_PATH, PLAYWRIGHT_MCP_SERVER, PLAYWRIGHT_PREFIX, SetupConfig,
+    SetupTask,
 };
 
 use super::{Context, SetupTaskRunner};
@@ -17,10 +18,7 @@ use crate::utils::pacman;
 pub const PLAYWRIGHT_CLI_VERSION: &str = "0.1.25";
 /// The `@playwright/mcp` release that the runner installs.
 pub const PLAYWRIGHT_MCP_VERSION: &str = "0.0.86";
-/// The server binary of [`PLAYWRIGHT_MCP_VERSION`]. Releases after 0.0.55 do
-/// not have `mcp-server-playwright`.
-pub const PLAYWRIGHT_MCP_SERVER_BINARY: &str = "playwright-mcp";
-const PLAYWRIGHT_CLI_BINARY: &str = "playwright-cli";
+pub const PLAYWRIGHT_CLI_BINARY: &str = "playwright-cli";
 
 const NODE_PACKAGES: [&str; 2] = ["nodejs", "npm"];
 const NODE_EXECUTABLES: [&str; 2] = ["/usr/bin/node", "/usr/bin/npm"];
@@ -32,7 +30,8 @@ const SYSTEM_DIRECTORY_MODE: u32 = 0o755;
 
 pub struct PlaywrightTask;
 
-fn prefix_binary(name: &str) -> PathBuf {
+/// The path of the binary `name` that npm installed under [`PLAYWRIGHT_PREFIX`].
+pub fn prefix_binary(name: &str) -> PathBuf {
     Path::new(PLAYWRIGHT_PREFIX)
         .join("node_modules/.bin")
         .join(name)
@@ -45,7 +44,7 @@ fn has_node(system: &dyn System) -> bool {
 }
 
 fn has_playwright_packages(system: &dyn System) -> bool {
-    system.exists(&prefix_binary(PLAYWRIGHT_MCP_SERVER_BINARY))
+    system.exists(Path::new(PLAYWRIGHT_MCP_SERVER))
         && system.exists(&prefix_binary(PLAYWRIGHT_CLI_BINARY))
 }
 

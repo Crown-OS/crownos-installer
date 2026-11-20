@@ -4,12 +4,26 @@ const PROCESS_STATUS_PATH: &str = "/proc/self/status";
 
 /// Fails unless the real user ID of the process is 0.
 pub fn require_root() -> Result<()> {
-    let process_status = std::fs::read_to_string(PROCESS_STATUS_PATH)
-        .with_context(|| format!("could not read {PROCESS_STATUS_PATH}"))?;
-    if real_user_id(&process_status) != Some(0) {
+    if !is_root()? {
         bail!("this command needs root");
     }
     Ok(())
+}
+
+/// Fails when the real user ID of the process is 0.
+pub fn refuse_root() -> Result<()> {
+    if is_root()? {
+        bail!(
+            "this command changes the files of the user who runs it: run it as that user, not as root"
+        );
+    }
+    Ok(())
+}
+
+fn is_root() -> Result<bool> {
+    let process_status = std::fs::read_to_string(PROCESS_STATUS_PATH)
+        .with_context(|| format!("could not read {PROCESS_STATUS_PATH}"))?;
+    Ok(real_user_id(&process_status) == Some(0))
 }
 
 /// The first value of the `Uid:` line of `/proc/<pid>/status`.

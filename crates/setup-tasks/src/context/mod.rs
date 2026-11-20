@@ -69,6 +69,12 @@ pub trait System {
 
     fn exists(&self, path: &Path) -> bool;
 
+    /// True when `path` is a directory or a symbolic link to a directory.
+    fn is_directory(&self, path: &Path) -> bool;
+
+    /// The executable file `name` in a directory of `PATH`.
+    fn find_program(&self, name: &str) -> Option<PathBuf>;
+
     /// The entries of `path`. A missing directory has no entries.
     fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>, TaskError>;
 

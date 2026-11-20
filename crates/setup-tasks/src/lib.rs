@@ -5,11 +5,14 @@
 //! Each side effect goes through the [`System`] trait. Thus the tests replace
 //! the machine with a recording fake.
 
+pub mod agents;
 pub mod config;
 pub mod context;
 pub mod error;
+pub mod playwright_mcp;
 pub mod state;
 pub mod tasks;
+pub mod user;
 pub mod utils;
 
 pub use context::{Output, RealSystem, System};
