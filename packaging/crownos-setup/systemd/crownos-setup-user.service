@@ -1,6 +1,6 @@
 [Unit]
 Description=CrownOS post-install setup for this user
-ConditionUser=!root
+ConditionUser=!@system
 ConditionPathExists=!/run/archiso
 ConditionPathExists=/etc/crownos/setup.ron
 

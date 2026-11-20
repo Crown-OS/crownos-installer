@@ -1,9 +1,10 @@
 //! The notification that tells the user that the setup is complete, one time
 //! for each generation of the choices.
 
+use std::path::Path;
 use std::time::Duration;
 
-use crownos_config::system::{DeveloperTool, SetupConfig};
+use crownos_config::system::{DeveloperTool, SetupTask};
 
 use super::{SetupSnapshot, UserMarker};
 use crate::context::System;
@@ -12,6 +13,7 @@ use crate::utils::home_file;
 use crate::utils::user_directories::UserDirectories;
 
 const TITLE: &str = "Your setup is complete";
+const TITLE_WITH_PROBLEMS: &str = "Some of your setup could not finish";
 const RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const RETRY_LIMIT: Duration = Duration::from_secs(10 * 60);
 
@@ -32,7 +34,7 @@ pub fn notify_once(
         return Ok(false);
     }
     home_file::refuse_symbolic_link(system, &marker_file)?;
-    let body = summary(&snapshot.config);
+    let body = summary(system, snapshot);
     let attempts = RETRY_LIMIT.as_secs() / RETRY_INTERVAL.as_secs();
     for attempt in 1..=attempts {
         let output = system.run(
@@ -43,7 +45,7 @@ pub fn notify_once(
                 "--hint",
                 "string:desktop-entry:crownos-settings",
                 "--",
-                TITLE,
+                title(snapshot),
                 &body,
             ],
         );
@@ -67,28 +69,71 @@ pub fn notify_once(
     Ok(false)
 }
 
-/// One short line for the browser, the developer tools and Playwright.
-pub fn summary(config: &SetupConfig) -> String {
-    let mut lines = vec![format!("{} is your browser.", config.browser.name())];
-    let tools: Vec<&str> = config
-        .developer_tools
-        .enabled()
-        .map(DeveloperTool::name)
-        .collect();
-    match tools.as_slice() {
+/// One short line for each part of the setup: what is ready and what could
+/// not be installed. A developer tool counts as installed when its program
+/// exists.
+pub fn summary(system: &dyn System, snapshot: &SetupSnapshot) -> String {
+    let config = &snapshot.config;
+    let browser = config.browser.name();
+    let mut lines = vec![if snapshot.has_given_up(SetupTask::Browser) {
+        format!("{browser} could not be installed. See Settings > Web Browser.")
+    } else {
+        format!("{browser} is your browser.")
+    }];
+
+    let (installed_tools, missing_tools): (Vec<DeveloperTool>, Vec<DeveloperTool>) =
+        config.developer_tools.enabled().partition(|tool| {
+            !snapshot.has_given_up(SetupTask::DeveloperTools)
+                || system.exists(Path::new(tool.executable()))
+        });
+    match installed_tools.as_slice() {
         [] => {}
-        [tool] => lines.push(format!("{tool} is installed.")),
-        [first @ .., last] => lines.push(format!("{} and {last} are installed.", first.join(", "))),
+        [tool] => lines.push(format!("{} is installed.", tool.name())),
+        tools => lines.push(format!("{} are installed.", join_names(tools))),
     }
+    if !missing_tools.is_empty() {
+        lines.push(format!(
+            "{} could not be installed. See Settings > Developer Tools.",
+            join_names(&missing_tools)
+        ));
+    }
+
     if config.wants_playwright() {
-        lines.push("Playwright is ready for coding agents.".to_owned());
+        lines.push(if snapshot.has_given_up(SetupTask::Playwright) {
+            "Playwright could not be set up. See Settings > Developer Tools.".to_owned()
+        } else {
+            "Playwright is ready for coding agents.".to_owned()
+        });
     }
     lines.join("\n")
 }
 
+fn title(snapshot: &SetupSnapshot) -> &'static str {
+    if SetupTask::ALL
+        .into_iter()
+        .any(|task| snapshot.has_given_up(task))
+    {
+        TITLE_WITH_PROBLEMS
+    } else {
+        TITLE
+    }
+}
+
+/// `A`, `A and B`, `A, B and C`.
+fn join_names(tools: &[DeveloperTool]) -> String {
+    let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
+    match names.split_last() {
+        None => String::new(),
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, first)) => format!("{} and {last}", first.join(", ")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crownos_config::system::{Browser, DeveloperTools};
+    use crownos_config::system::{
+        Browser, DeveloperTools, MAX_TASK_ATTEMPTS, SetupConfig, TaskState, TaskStatus,
+    };
 
     use super::*;
     use crate::context::fake::FakeSystem;
@@ -118,15 +163,36 @@ mod tests {
             .count()
     }
 
+    fn snapshot_of(config: SetupConfig) -> SetupSnapshot {
+        SetupSnapshot {
+            config,
+            generation: 21,
+            states: Vec::new(),
+        }
+    }
+
+    fn gave_up() -> TaskState {
+        TaskState {
+            status: TaskStatus::Failed {
+                message: "target not found".to_owned(),
+            },
+            generation: 21,
+            started_at_unix: None,
+            finished_at_unix: None,
+            attempts: MAX_TASK_ATTEMPTS,
+        }
+    }
+
     #[test]
     fn the_summary_names_the_choices() {
+        let system = FakeSystem::new();
         let tools = DeveloperTools {
             claude_code: true,
             codex: true,
             cursor: false,
         };
         assert_eq!(
-            summary(&brave_with_tools(tools).config),
+            summary(&system, &brave_with_tools(tools)),
             "Brave is your browser.\nClaude Code and Codex are installed.\nPlaywright is ready for coding agents."
         );
         let every_tool = DeveloperTools {
@@ -134,12 +200,42 @@ mod tests {
             ..tools
         };
         assert!(
-            summary(&brave_with_tools(every_tool).config)
+            summary(&system, &brave_with_tools(every_tool))
                 .contains("Claude Code, Codex and Cursor are installed.")
         );
         assert_eq!(
-            summary(&SetupConfig::default()),
+            summary(&system, &snapshot_of(SetupConfig::default())),
             "Chromium is your browser.\nPlaywright is ready for coding agents."
+        );
+    }
+
+    #[test]
+    fn the_summary_names_what_could_not_be_installed() {
+        let system = FakeSystem::new().with_file("/usr/bin/claude", "");
+        let snapshot = SetupSnapshot {
+            states: vec![
+                (SetupTask::DeveloperTools, gave_up()),
+                (SetupTask::Playwright, gave_up()),
+            ],
+            ..brave_with_tools(DeveloperTools {
+                claude_code: true,
+                codex: false,
+                cursor: true,
+            })
+        };
+        assert_eq!(
+            summary(&system, &snapshot),
+            "Brave is your browser.\nClaude Code is installed.\nCursor could not be installed. See Settings > Developer Tools.\nPlaywright could not be set up. See Settings > Developer Tools."
+        );
+        assert_eq!(title(&snapshot), TITLE_WITH_PROBLEMS);
+
+        let browser_failed = SetupSnapshot {
+            states: vec![(SetupTask::Browser, gave_up())],
+            ..brave_with_tools(DeveloperTools::default())
+        };
+        assert!(
+            summary(&system, &browser_failed)
+                .starts_with("Brave could not be installed. See Settings > Web Browser.")
         );
     }
 
@@ -162,7 +258,7 @@ mod tests {
     #[test]
     fn a_failed_notify_send_is_tried_again_for_ten_minutes() {
         let snapshot = brave_with_tools(DeveloperTools::default());
-        let command_line = format!("{NOTIFY} {}", summary(&snapshot.config));
+        let command_line = format!("{NOTIFY} {}", summary(&FakeSystem::new(), &snapshot));
         let system = FakeSystem::new()
             .with_program("notify-send")
             .with_failure(&command_line, "no notification daemon");

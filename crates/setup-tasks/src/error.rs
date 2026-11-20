@@ -1,7 +1,10 @@
 use std::io;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crownos_config::system::{SetupConfigError, SetupStateError};
+
+use crate::utils::time_limit;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TaskError {
@@ -13,6 +16,8 @@ pub enum TaskError {
         status: Option<i32>,
         stderr: String,
     },
+    #[error("`{program}` timed out after {}", time_limit::describe(*limit))]
+    TimedOut { program: String, limit: Duration },
     #[error("another program holds the pacman database lock")]
     PacmanLocked,
     #[error("ran, but the result is not complete")]

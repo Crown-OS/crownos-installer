@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use super::Context;
 use crate::context::System;
 use crate::error::TaskError;
+use crate::utils::time_limit::{self, BUILD_TIME_LIMIT, GIT_TIME_LIMIT};
 use crate::utils::{pacman, srcinfo};
 
 const BUILD_USER: &str = "crownos-build";
@@ -25,11 +26,13 @@ pub fn install(context: &Context, package: &str) -> Result<(), TaskError> {
     let build_directory = Path::new(BUILD_ROOT).join(package);
     let build_directory_text = build_directory.to_string_lossy();
     let build_environment = [("HOME", build_directory_text.as_ref())];
-    let run_as_build_user = |program: &str, args: &[&str]| {
-        system.run_as(
+    let run_as_build_user = |limit, program: &str, args: &[&str]| {
+        time_limit::run_as(
+            system,
             BUILD_USER,
             &build_directory,
             &build_environment,
+            limit,
             program,
             args,
         )
@@ -39,15 +42,23 @@ pub fn install(context: &Context, package: &str) -> Result<(), TaskError> {
     pacman::install_as_dependencies(system, &BUILD_TOOLS)?;
 
     let is_updated = system.exists(&build_directory.join(".git"))
-        && run_as_build_user("git", &["-C", &build_directory_text, "pull", "--ff-only"])?
-            .succeeded();
+        && run_as_build_user(
+            GIT_TIME_LIMIT,
+            "git",
+            &["-C", &build_directory_text, "pull", "--ff-only"],
+        )?
+        .succeeded();
     if !is_updated {
         system.remove_dir_all(&build_directory)?;
         system.create_dir_all(&build_directory, BUILD_DIRECTORY_MODE)?;
         system.chown(&build_directory, BUILD_USER)?;
         let repository = format!("https://aur.archlinux.org/{package}.git");
-        run_as_build_user("git", &["clone", &repository, &build_directory_text])?
-            .check("git clone")?;
+        run_as_build_user(
+            GIT_TIME_LIMIT,
+            "git",
+            &["clone", &repository, &build_directory_text],
+        )?
+        .check("git clone")?;
     }
 
     let srcinfo_path = build_directory.join(".SRCINFO");
@@ -63,6 +74,7 @@ pub fn install(context: &Context, package: &str) -> Result<(), TaskError> {
     }
 
     run_as_build_user(
+        BUILD_TIME_LIMIT,
         "makepkg",
         &["--nodeps", "--nocheck", "--noconfirm", "--force"],
     )?

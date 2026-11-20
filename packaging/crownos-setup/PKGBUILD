@@ -2,7 +2,8 @@
 #
 # Builds the checkout this file lives in, so run makepkg from
 # packaging/crownos-setup/ with the sibling path dependencies checked out next
-# to the repository, as .github/workflows/release.yml does: ../crownos-config.
+# to the repository, as .github/workflows/release.yml does: ../crownos-config
+# and ../crownui.
 
 pkgname=crownos-setup
 pkgver=0.3.2
@@ -11,13 +12,15 @@ pkgdesc="Installs the browser, the developer tools and Playwright that were chos
 arch=(x86_64)
 url="https://github.com/Crown-OS/crownos-installer"
 license=('MIT OR Apache-2.0')
-depends=(glibc libgcc pacman git polkit systemd libnotify util-linux)
+depends=(glibc libgcc pacman polkit systemd libnotify util-linux coreutils)
 optdepends=(
+  'git: build Google Chrome from the AUR'
   'nodejs: Playwright for coding agents'
   'npm: Playwright for coding agents'
   'networkmanager: start the setup again when the network comes up'
 )
 makedepends=(cargo clang)
+backup=(etc/profile.d/crownos-playwright.sh)
 options=(!lto !debug)
 
 _workspace="$startdir/../.."

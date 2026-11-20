@@ -5,8 +5,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use crownos_config::system::{SETUP_CONFIG_PATH, SETUP_STATE_DIR};
-use crownos_setup_tasks::utils::network;
-use crownos_setup_tasks::{Context, PassSummary, StateStore, System, config, run_pass};
+use crownos_setup_tasks::{Context, PassSummary, StateStore, System, TaskError, config, run_pass};
 
 use crate::utils::task_status;
 
@@ -32,8 +31,18 @@ impl RunSummary {
 /// Exits with a failure only when a retry can help, so that the unit starts
 /// again later. NetworkManager starts the unit again when the network comes
 /// up.
+///
+/// A broken `/etc/crownos/setup.ron` runs no task and exits with success:
+/// Settings shows the error, and a restart cannot fix the file.
 pub fn run(system: &dyn System) -> Result<ExitCode> {
-    let summary = run_until_settled(system)?;
+    let summary = match run_until_settled(system) {
+        Ok(summary) => summary,
+        Err(error) if is_broken_choices(&error) => {
+            tracing::warn!("{error:#}; no task runs until the choices are fixed");
+            return Ok(ExitCode::SUCCESS);
+        }
+        Err(error) => return Err(error),
+    };
     let store = StateStore::new(system, SETUP_STATE_DIR);
     for (task, state) in store.load_all()? {
         match task_status::message(&state.status) {
@@ -48,16 +57,20 @@ pub fn run(system: &dyn System) -> Result<ExitCode> {
     let waiting_tasks = &summary.last_pass.waiting_for_network;
     if !waiting_tasks.is_empty() {
         let names: Vec<&str> = waiting_tasks.iter().map(|task| task.id()).collect();
-        tracing::info!(
-            "offline: {} start when the network comes up",
-            names.join(", ")
-        );
+        tracing::info!("offline: {} wait for the network", names.join(", "));
     }
     Ok(if summary.needs_retry() {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     })
+}
+
+fn is_broken_choices(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<TaskError>(),
+        Some(TaskError::Config(_))
+    )
 }
 
 /// Runs passes until the choices stay the same during a pass, at most
@@ -74,11 +87,7 @@ fn run_until_settled(system: &dyn System) -> Result<RunSummary> {
         summary.passes += 1;
         let generation = config::generation(system, config_path);
         let setup_config = config::load_or_default(system, config_path)?;
-        let context = Context {
-            config: setup_config,
-            system,
-            online: network::is_online(system),
-        };
+        let context = Context::new(setup_config, system);
         summary.last_pass = run_pass(&context, &store, generation)?;
         summary.choices_settled = config::generation(system, config_path) == generation
             && config::load_or_default(system, config_path)? == setup_config;
@@ -179,6 +188,31 @@ mod tests {
 
         assert_eq!(outcome(&system), (2, false));
         assert!(system.is_installed("openai-codex"));
+    }
+
+    #[test]
+    fn broken_choices_run_no_task_and_exit_with_success() {
+        let system = ready_system()
+            .with_network()
+            .with_file(SETUP_CONFIG_PATH, "(browser: Edge)");
+        let error = run_until_settled(&system).expect_err("broken");
+        assert!(is_broken_choices(&error));
+        assert_eq!(run(&system).expect("runs"), ExitCode::SUCCESS);
+        assert!(
+            !system
+                .commands()
+                .iter()
+                .any(|command| command.starts_with("pacman")),
+            "{:?}",
+            system.commands()
+        );
+    }
+
+    #[test]
+    fn a_settled_system_does_not_probe_the_network() {
+        let system = ready_system();
+        assert_eq!(outcome(&system), (1, false));
+        assert_eq!(system.network_probes(), 0);
     }
 
     #[test]
