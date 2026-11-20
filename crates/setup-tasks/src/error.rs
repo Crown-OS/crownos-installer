@@ -21,6 +21,8 @@ pub enum TaskError {
     MissingUser(&'static str),
     #[error("could not parse {}: {message}", path.display())]
     Parse { path: PathBuf, message: String },
+    #[error("could not render JSON: {0}")]
+    Json(#[from] serde_json::Error),
     #[error(transparent)]
     State(#[from] SetupStateError),
     #[error(transparent)]
@@ -28,6 +30,11 @@ pub enum TaskError {
 }
 
 impl TaskError {
+    /// True for an I/O error because the path exists already.
+    pub fn is_already_exists(&self) -> bool {
+        matches!(self, Self::Io { source, .. } if source.kind() == io::ErrorKind::AlreadyExists)
+    }
+
     pub fn io(path: impl Into<PathBuf>, source: io::Error) -> Self {
         Self::Io {
             path: path.into(),

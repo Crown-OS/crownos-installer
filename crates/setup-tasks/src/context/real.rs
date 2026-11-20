@@ -29,6 +29,11 @@ impl RealSystem {
     }
 }
 
+fn is_executable_file(path: &Path) -> bool {
+    fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
 impl System for RealSystem {
     fn run(&self, program: &str, args: &[&str]) -> Result<Output, TaskError> {
         let mut command = Command::new(program);
@@ -90,6 +95,17 @@ impl System for RealSystem {
 
     fn exists(&self, path: &Path) -> bool {
         path.exists()
+    }
+
+    fn is_directory(&self, path: &Path) -> bool {
+        path.is_dir()
+    }
+
+    fn find_program(&self, name: &str) -> Option<PathBuf> {
+        let search_path = std::env::var_os("PATH")?;
+        std::env::split_paths(&search_path)
+            .map(|directory| directory.join(name))
+            .find(|candidate| is_executable_file(candidate))
     }
 
     fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>, TaskError> {

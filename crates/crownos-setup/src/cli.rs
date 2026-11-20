@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use crownos_config::system::{Browser, DeveloperTool};
 
@@ -27,6 +29,20 @@ pub enum Command {
     Tools {
         #[command(subcommand)]
         action: ToolsAction,
+    },
+    /// Connect the coding agents of this account to CrownOS and point the dock
+    /// at the chosen browser. Runs as the user, not as root.
+    User {
+        /// Wait until the setup is complete, then show a notification.
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Start the Playwright MCP server for the chosen browser. Passes each
+    /// argument to the server.
+    #[command(disable_help_flag = true)]
+    PlaywrightMcp {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<OsString>,
     },
 }
 
@@ -88,6 +104,20 @@ mod tests {
         assert!(allowed(&["tools", "set", "codex", "off"]));
         assert!(!allowed(&["run"]));
         assert!(!allowed(&["status", "--json"]));
+        assert!(!allowed(&["user", "--wait"]));
+        assert!(!allowed(&["playwright-mcp", "--headless"]));
+    }
+
+    #[test]
+    fn playwright_mcp_passes_each_argument_to_the_server() {
+        let Command::PlaywrightMcp { arguments } =
+            parse(&["playwright-mcp", "--help", "--port", "0"])
+                .expect("parses")
+                .command
+        else {
+            panic!("not a playwright-mcp command");
+        };
+        assert_eq!(arguments, ["--help", "--port", "0"]);
     }
 
     #[test]

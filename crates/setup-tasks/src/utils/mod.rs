@@ -1,7 +1,12 @@
+pub mod browser_fallback;
 pub mod dock;
+pub mod home_file;
+pub mod json_file;
+pub mod json_merge;
 pub mod mimeapps;
 pub mod network;
 pub mod pacman;
 pub mod srcinfo;
 pub mod text;
 pub mod time;
+pub mod user_directories;
