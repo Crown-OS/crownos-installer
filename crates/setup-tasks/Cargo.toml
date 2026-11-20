@@ -1,0 +1,13 @@
+[package]
+name = "crownos-setup-tasks"
+version = "0.1.0"
+edition = "2024"
+description = "The post-install tasks that the crownos-setup runner does"
+
+[features]
+fake = []
+
+[dependencies]
+crownos-config = { workspace = true }
+ron = { workspace = true }
+thiserror = { workspace = true }
