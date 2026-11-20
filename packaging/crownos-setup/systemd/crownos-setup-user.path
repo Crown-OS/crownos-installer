@@ -1,0 +1,13 @@
+# The runner replaces the state files by rename, so the watch on the state
+# directory also starts the service again when a pass ends after --wait gave up.
+[Unit]
+Description=Watch the CrownOS setup choices and task states
+ConditionUser=!root
+
+[Path]
+PathChanged=/etc/crownos/setup.ron
+PathChanged=/var/lib/crownos/setup
+Unit=crownos-setup-user.service
+
+[Install]
+WantedBy=default.target

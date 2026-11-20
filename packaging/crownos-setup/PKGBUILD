@@ -1,0 +1,51 @@
+# Maintainer: marvelxcodes <ramakrishnan0046@gmail.com>
+#
+# Builds the checkout this file lives in, so run makepkg from
+# packaging/crownos-setup/ with the sibling path dependencies checked out next
+# to the repository, as .github/workflows/release.yml does: ../crownos-config.
+
+pkgname=crownos-setup
+pkgver=0.3.2
+pkgrel=1
+pkgdesc="Installs the browser, the developer tools and Playwright that were chosen during the CrownOS install"
+arch=(x86_64)
+url="https://github.com/Crown-OS/crownos-installer"
+license=('MIT OR Apache-2.0')
+depends=(glibc libgcc pacman git polkit systemd libnotify util-linux)
+optdepends=(
+  'nodejs: Playwright for coding agents'
+  'npm: Playwright for coding agents'
+  'networkmanager: start the setup again when the network comes up'
+)
+makedepends=(cargo clang)
+options=(!lto !debug)
+
+_workspace="$startdir/../.."
+
+prepare() {
+  cd "$_workspace"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+  cd "$_workspace"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --release --frozen -p crownos-setup
+}
+
+package() {
+  cd "$_workspace/packaging/crownos-setup"
+  install -Dm755 "$srcdir/target/release/crownos-setup" -t "$pkgdir/usr/bin"
+  install -Dm644 systemd/crownos-setup.service -t "$pkgdir/usr/lib/systemd/system"
+  install -Dm644 systemd/crownos-setup-user.{service,path} -t "$pkgdir/usr/lib/systemd/user"
+  install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
+  ln -s ../crownos-setup-user.service ../crownos-setup-user.path "$pkgdir/usr/lib/systemd/user/default.target.wants/"
+  install -Dm755 network/50-crownos-setup -t "$pkgdir/usr/lib/NetworkManager/dispatcher.d"
+  install -Dm644 polkit/org.crownos.setup.policy -t "$pkgdir/usr/share/polkit-1/actions"
+  install -Dm644 sysusers/crownos-setup.conf -t "$pkgdir/usr/lib/sysusers.d"
+  install -Dm644 tmpfiles/crownos-setup.conf -t "$pkgdir/usr/lib/tmpfiles.d"
+  install -Dm644 environment/60-crownos-playwright.conf -t "$pkgdir/usr/lib/environment.d"
+  install -Dm644 environment/crownos-playwright.sh -t "$pkgdir/etc/profile.d"
+  install -Dm644 environment/crownos-playwright.fish -t "$pkgdir/usr/share/fish/vendor_conf.d"
+  install -Dm644 "$_workspace"/LICENSE-{MIT,APACHE} -t "$pkgdir/usr/share/licenses/$pkgname"
+}

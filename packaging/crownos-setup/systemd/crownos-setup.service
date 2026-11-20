@@ -1,0 +1,25 @@
+# A task that needs the network stays pending while the machine is offline,
+# and the restart tries it again.
+[Unit]
+Description=CrownOS post-install setup
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/crownos/setup.ron
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/crownos-setup run
+Restart=on-failure
+RestartSec=5min
+RestartSteps=6
+RestartMaxDelaySec=6h
+RuntimeMaxSec=6h
+Nice=10
+IOSchedulingClass=idle
+StateDirectory=crownos/setup
+TimeoutStopSec=15min
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
