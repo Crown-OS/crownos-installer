@@ -1,0 +1,12 @@
+#!/bin/sh
+# NetworkManager runs this script with the interface in $1 and the action
+# in $2. When a connection comes up, start the setup runner again, so that the
+# tasks that wait for the network do not wait for the next boot.
+
+case "$2" in
+up | connectivity-change)
+	systemctl start --no-block crownos-setup.service
+	;;
+esac
+
+exit 0

@@ -1,0 +1,42 @@
+# Maintainer: marvelxcodes <ramakrishnan0046@gmail.com>
+#
+# Builds the checkout this file lives in, so run makepkg from
+# packaging/crownos-installer/ with the sibling path dependencies checked out
+# next to the repository, as .github/workflows/release.yml does:
+# ../crownos-config and ../crownui (plus whatever those path-depend on).
+# The live profile of crownos-iso ships the launcher, which starts the
+# installer as root, so this package does not install data/*.desktop.
+
+pkgname=crownos-installer
+pkgver=0.3.2
+pkgrel=1
+pkgdesc="The CrownOS installer"
+arch=(x86_64)
+url="https://github.com/Crown-OS/crownos-installer"
+license=('MIT OR Apache-2.0')
+depends=(
+  glibc libffi libgcc libglvnd libxkbcommon vulkan-icd-loader wayland
+  arch-install-scripts btrfs-progs dosfstools e2fsprogs xfsprogs gptfdisk
+  parted efibootmgr gnupg util-linux systemd
+)
+makedepends=(cargo clang)
+options=(!lto !debug)
+
+_workspace="$startdir/../.."
+
+prepare() {
+  cd "$_workspace"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+  cd "$_workspace"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --release --frozen -p crownos-installer
+}
+
+package() {
+  cd "$_workspace"
+  install -Dm755 "$srcdir/target/release/crownos-installer" -t "$pkgdir/usr/bin"
+  install -Dm644 LICENSE-{MIT,APACHE} -t "$pkgdir/usr/share/licenses/$pkgname"
+}

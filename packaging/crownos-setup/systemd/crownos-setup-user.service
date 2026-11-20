@@ -1,0 +1,13 @@
+[Unit]
+Description=CrownOS post-install setup for this user
+ConditionUser=!root
+ConditionPathExists=!/run/archiso
+ConditionPathExists=/etc/crownos/setup.ron
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/crownos-setup user --wait
+Nice=10
+
+[Install]
+WantedBy=default.target
