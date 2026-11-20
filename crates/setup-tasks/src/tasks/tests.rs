@@ -90,6 +90,7 @@ fn offline_first_boot_sets_the_bundled_browser_and_waits_for_playwright() {
         PassSummary {
             failed: Vec::new(),
             waiting_for_network: vec![SetupTask::Playwright],
+            given_up: Vec::new(),
         }
     );
     assert_eq!(status(&system, SetupTask::Browser), Some(TaskStatus::Done));
@@ -193,6 +194,7 @@ fn a_done_task_records_the_new_generation() {
                 generation: 1,
                 started_at_unix: None,
                 finished_at_unix: None,
+                attempts: 0,
             },
         )
         .expect("saves");
@@ -260,7 +262,10 @@ fn playwright_installs_node_the_packages_and_the_firefox_build() {
 
 #[test]
 fn a_run_that_leaves_the_task_incomplete_fails() {
-    let system = first_boot().with_installed(&["firefox"]);
+    let system = first_boot()
+        .with_installed(&["firefox"])
+        .with_program("npm")
+        .with_program("env");
     let summary = pass(
         &system,
         config(Browser::Firefox, DeveloperTools::default()),
@@ -286,6 +291,7 @@ fn with_chrome_build(system: FakeSystem) -> FakeSystem {
         "as crownos-build in {BUILD_DIRECTORY}: HOME={BUILD_DIRECTORY} git clone https://aur.archlinux.org/google-chrome.git {BUILD_DIRECTORY}"
     );
     with_playwright_ready(system)
+        .with_program("id")
         .with_command_writes(
             &clone,
             format!("{BUILD_DIRECTORY}/.SRCINFO"),
@@ -412,4 +418,96 @@ fn a_missing_build_user_fails_before_pacman() {
             .iter()
             .any(|command| command.starts_with("pacman -S"))
     );
+}
+
+const BRAVE_INSTALL: &str = "pacman -Syu --needed --noconfirm -- brave-bin";
+
+fn failing_brave() -> FakeSystem {
+    with_playwright_ready(first_boot())
+        .with_failure(BRAVE_INSTALL, "error: target not found: brave-bin")
+}
+
+fn attempts(system: &FakeSystem, task: SetupTask) -> u32 {
+    StateStore::new(system, SETUP_STATE_DIR)
+        .load(task)
+        .expect("loads")
+        .map_or(0, |state| state.attempts)
+}
+
+#[test]
+fn the_third_failure_gives_up_and_the_next_pass_skips_the_task() {
+    let system = failing_brave();
+    let brave = config(Browser::Brave, DeveloperTools::default());
+
+    for attempt in 1..=2 {
+        let summary = pass(&system, brave, true);
+        assert_eq!(summary.failed.len(), 1, "attempt {attempt}");
+        assert!(summary.given_up.is_empty());
+        assert_eq!(attempts(&system, SetupTask::Browser), attempt);
+    }
+    let third = pass(&system, brave, true);
+    assert!(third.failed.is_empty());
+    assert_eq!(third.given_up, [SetupTask::Browser]);
+    assert_eq!(attempts(&system, SetupTask::Browser), 3);
+
+    system.clear_journal();
+    let fourth = pass(&system, brave, true);
+    assert_eq!(fourth.given_up, [SetupTask::Browser]);
+    assert!(
+        !system
+            .journal()
+            .iter()
+            .any(|entry| entry.contains("brave") || entry.ends_with("browser.ron")),
+        "{:?}",
+        system.journal()
+    );
+    assert!(matches!(
+        status(&system, SetupTask::Browser),
+        Some(TaskStatus::Failed { .. })
+    ));
+}
+
+#[test]
+fn a_new_generation_resets_the_attempts() {
+    let system = failing_brave();
+    let brave = config(Browser::Brave, DeveloperTools::default());
+    for _ in 0..3 {
+        pass(&system, brave, true);
+    }
+
+    let context = Context {
+        config: brave,
+        system: &system,
+        online: true,
+    };
+    let summary = run_pass(
+        &context,
+        &StateStore::new(&system, SETUP_STATE_DIR),
+        GENERATION + 1,
+    )
+    .expect("pass runs");
+    assert_eq!(summary.failed.len(), 1);
+    assert_eq!(attempts(&system, SetupTask::Browser), 1);
+}
+
+#[test]
+fn a_done_or_pending_state_keeps_the_attempts() {
+    let system = with_playwright_ready(first_boot());
+    StateStore::new(&system, SETUP_STATE_DIR)
+        .save(
+            SetupTask::Browser,
+            &TaskState {
+                status: TaskStatus::Failed {
+                    message: "offline".to_owned(),
+                },
+                generation: GENERATION,
+                started_at_unix: None,
+                finished_at_unix: None,
+                attempts: 2,
+            },
+        )
+        .expect("saves");
+    pass(&system, SetupConfig::default(), true);
+    assert_eq!(status(&system, SetupTask::Browser), Some(TaskStatus::Done));
+    assert_eq!(attempts(&system, SetupTask::Browser), 2);
 }

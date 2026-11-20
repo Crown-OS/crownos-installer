@@ -47,20 +47,29 @@ pub fn all() -> [&'static dyn SetupTaskRunner; 3] {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PassSummary {
+    /// The tasks that failed and that the next run tries again.
     pub failed: Vec<(SetupTask, String)>,
     pub waiting_for_network: Vec<SetupTask>,
+    /// The tasks that failed [`MAX_TASK_ATTEMPTS`](crownos_config::system::MAX_TASK_ATTEMPTS) times for this generation.
+    /// The runner does not try them again until the choices change.
+    pub given_up: Vec<SetupTask>,
 }
 
 impl PassSummary {
     pub fn is_complete(&self) -> bool {
-        self.failed.is_empty() && self.waiting_for_network.is_empty()
+        self.failed.is_empty() && self.waiting_for_network.is_empty() && self.given_up.is_empty()
+    }
+
+    pub fn has_retryable_failure(&self) -> bool {
+        !self.failed.is_empty()
     }
 }
 
 /// Runs each wanted task that is not done and records its state. A task is
 /// `Done` only when it is done after its run. A task that fails does not stop
-/// the tasks after it. A task that needs the network
-/// stays `Pending` while the machine is offline.
+/// the tasks after it. A task that needs the network stays `Pending` while
+/// the machine is offline. A task that failed [`MAX_TASK_ATTEMPTS`](crownos_config::system::MAX_TASK_ATTEMPTS) times for
+/// `generation` is not run again, and its state stays as it is.
 pub fn run_pass(
     context: &Context,
     store: &StateStore,
@@ -74,32 +83,39 @@ pub fn run_pass(
             continue;
         }
 
-        let previous_state = store.load(task).unwrap_or_default();
+        let current_state = store
+            .load(task)
+            .unwrap_or_default()
+            .filter(|state| state.generation == generation);
+        if current_state.as_ref().is_some_and(TaskState::gave_up) {
+            summary.given_up.push(task);
+            continue;
+        }
+        let attempts = current_state.as_ref().map_or(0, |state| state.attempts);
         let is_recorded = |status: &TaskStatus| {
-            previous_state
+            current_state
                 .as_ref()
-                .is_some_and(|state| state.status == *status && state.generation == generation)
+                .is_some_and(|state| state.status == *status)
+        };
+        let started_at_unix = now_unix();
+        let state = |status, started_at_unix, finished_at_unix| TaskState {
+            status,
+            generation,
+            started_at_unix,
+            finished_at_unix,
+            attempts,
         };
 
-        let started_at_unix = now_unix();
         let outcome = match runner.is_done(context) {
             Ok(true) => {
                 if !is_recorded(&TaskStatus::Done) {
-                    store.save(
-                        task,
-                        &TaskState {
-                            status: TaskStatus::Done,
-                            generation,
-                            started_at_unix: None,
-                            finished_at_unix: Some(started_at_unix),
-                        },
-                    )?;
+                    store.save(task, &state(TaskStatus::Done, None, Some(started_at_unix)))?;
                 }
                 continue;
             }
             Ok(false) if !context.online && runner.needs_network(context) => {
                 if !is_recorded(&TaskStatus::Pending) {
-                    store.reset(&[task], generation)?;
+                    store.save(task, &state(TaskStatus::Pending, None, None))?;
                 }
                 summary.waiting_for_network.push(task);
                 continue;
@@ -107,12 +123,7 @@ pub fn run_pass(
             Ok(false) => {
                 store.save(
                     task,
-                    &TaskState {
-                        status: TaskStatus::Running,
-                        generation,
-                        started_at_unix: Some(started_at_unix),
-                        finished_at_unix: None,
-                    },
+                    &state(TaskStatus::Running, Some(started_at_unix), None),
                 )?;
                 runner.run(context).and_then(|()| {
                     if runner.is_done(context)? {
@@ -125,23 +136,29 @@ pub fn run_pass(
             Err(error) => Err(error),
         };
 
-        let status = match outcome {
-            Ok(()) => TaskStatus::Done,
+        let finished_state = match outcome {
+            Ok(()) => state(TaskStatus::Done, Some(started_at_unix), Some(now_unix())),
             Err(error) => {
                 let message = error.to_string();
-                summary.failed.push((task, message.clone()));
-                TaskStatus::Failed { message }
+                let failed_state = TaskState {
+                    attempts: attempts + 1,
+                    ..state(
+                        TaskStatus::Failed {
+                            message: message.clone(),
+                        },
+                        Some(started_at_unix),
+                        Some(now_unix()),
+                    )
+                };
+                if failed_state.gave_up() {
+                    summary.given_up.push(task);
+                } else {
+                    summary.failed.push((task, message));
+                }
+                failed_state
             }
         };
-        store.save(
-            task,
-            &TaskState {
-                status,
-                generation,
-                started_at_unix: Some(started_at_unix),
-                finished_at_unix: Some(now_unix()),
-            },
-        )?;
+        store.save(task, &finished_state)?;
     }
     Ok(summary)
 }

@@ -17,7 +17,7 @@ pub struct Merge<'a> {
 pub fn merge_servers<'a>(
     document: &mut Value,
     path: &[&str],
-    entries: &[(&'a str, Value)],
+    entries: impl IntoIterator<Item = (&'a str, Value)>,
 ) -> Option<Merge<'a>> {
     let mut object = document.as_object_mut()?;
     for key in path {
@@ -28,12 +28,12 @@ pub fn merge_servers<'a>(
     }
     let mut merge = Merge::default();
     for (name, wanted_entry) in entries {
-        match object.get(*name) {
+        match object.get(name) {
             None => {
-                object.insert((*name).to_owned(), wanted_entry.clone());
+                object.insert(name.to_owned(), wanted_entry);
                 merge.added.push(name);
             }
-            Some(existing_entry) if !starts_the_same_server(existing_entry, wanted_entry) => {
+            Some(existing_entry) if !starts_the_same_server(existing_entry, &wanted_entry) => {
                 merge.kept.push(name);
             }
             Some(_) => {}
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn an_empty_document_gets_the_path_and_each_server() {
         let mut document = json!({});
-        let merge = merge_servers(&mut document, &["a", "b"], &entries()).expect("merges");
+        let merge = merge_servers(&mut document, &["a", "b"], entries()).expect("merges");
         assert_eq!(merge.added, ["crownos-computer-use", "playwright"]);
         assert!(merge.kept.is_empty());
         assert_eq!(
@@ -86,7 +86,7 @@ mod tests {
             "crownos-computer-use": { "command": "crownos-computer-use", "args": ["mcp"], "env": { "A": "1" } },
         }});
         let before = document.clone();
-        let merge = merge_servers(&mut document, &["servers"], &entries()).expect("merges");
+        let merge = merge_servers(&mut document, &["servers"], entries()).expect("merges");
         assert_eq!(
             merge,
             Merge {
@@ -100,12 +100,9 @@ mod tests {
     #[test]
     fn a_value_that_is_not_an_object_stops_the_merge() {
         assert_eq!(
-            merge_servers(&mut json!({ "servers": [] }), &["servers"], &entries()),
+            merge_servers(&mut json!({ "servers": [] }), &["servers"], entries()),
             None
         );
-        assert_eq!(
-            merge_servers(&mut json!([]), &["servers"], &entries()),
-            None
-        );
+        assert_eq!(merge_servers(&mut json!([]), &["servers"], entries()), None);
     }
 }

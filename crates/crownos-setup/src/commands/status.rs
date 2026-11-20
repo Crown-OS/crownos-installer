@@ -80,6 +80,7 @@ mod tests {
             generation: 5,
             started_at_unix: None,
             finished_at_unix: None,
+            attempts: 0,
         }
     }
 

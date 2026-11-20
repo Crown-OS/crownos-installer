@@ -22,9 +22,8 @@ pub struct UserSetupReport {
     /// Each MCP server that a file has with another command or other
     /// arguments. The run did not change it.
     pub kept: Vec<(PathBuf, &'static str)>,
-    /// The files that the run did not edit: symbolic links, and files with
-    /// comments or an unexpected format.
-    pub skipped: Vec<PathBuf>,
+    /// The files that the run did not edit, each with the reason.
+    pub skipped: Vec<(PathBuf, SkipReason)>,
     /// Each step that failed, with the file or folder of the step. The steps
     /// after it ran.
     pub failed: Vec<(PathBuf, TaskError)>,
@@ -32,7 +31,37 @@ pub struct UserSetupReport {
     pub dock_changed: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkipReason {
+    SymbolicLink,
+    UnexpectedFormat,
+}
+
+impl SkipReason {
+    /// The reason of a skip that a step reported. A step skips a symbolic
+    /// link before it reads the file.
+    fn of(system: &dyn System, path: &Path) -> Self {
+        if system.read_link(path).is_some() {
+            Self::SymbolicLink
+        } else {
+            Self::UnexpectedFormat
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::SymbolicLink => "it is a symbolic link",
+            Self::UnexpectedFormat => "it has comments or an unexpected format",
+        }
+    }
+}
+
 impl UserSetupReport {
+    fn record_skip(&mut self, system: &dyn System, path: PathBuf) {
+        let reason = SkipReason::of(system, &path);
+        self.skipped.push((path, reason));
+    }
+
     fn record_failure<T>(&mut self, path: &Path, result: Result<T, TaskError>) -> Option<T> {
         result
             .map_err(|error| self.failed.push((path.to_owned(), error)))
@@ -81,7 +110,7 @@ pub fn wire(
                     .kept
                     .extend(merge.kept.into_iter().map(|name| (path.clone(), name)));
             }
-            Some(None) => report.skipped.push(path),
+            Some(None) => report.record_skip(system, path),
             None => {}
         }
     }
@@ -93,17 +122,18 @@ pub fn wire(
         });
         match report.record_failure(&path, playwright_cli::set_browser(system, &path, browser)) {
             Some(ConfigurationChange::Written) => report.playwright_configured = true,
-            Some(ConfigurationChange::Skipped) => report.skipped.push(path),
+            Some(ConfigurationChange::Skipped) => report.record_skip(system, path),
             Some(ConfigurationChange::Unchanged) | None => {}
         }
     }
 
-    report.dock_changed = report
-        .record_failure(
-            &directories.dock_file(),
-            dock::update_once(system, directories, snapshot),
-        )
-        .unwrap_or(false);
+    match dock::update_once(system, directories, snapshot) {
+        Ok(changed) => report.dock_changed = changed,
+        Err(TaskError::SymbolicLink(path)) => {
+            report.skipped.push((path, SkipReason::SymbolicLink));
+        }
+        Err(error) => report.failed.push((directories.dock_file(), error)),
+    }
     report
 }
 
@@ -169,7 +199,10 @@ mod tests {
         assert!(report.kept.is_empty() && report.failed.is_empty());
         assert_eq!(
             report.skipped,
-            [PathBuf::from("/home/ada/.config/zed/settings.json")]
+            [(
+                PathBuf::from("/home/ada/.config/zed/settings.json"),
+                SkipReason::UnexpectedFormat
+            )]
         );
         assert!(report.playwright_configured);
         assert!(system.file("/home/ada/.codex/config.toml").is_some());
@@ -216,5 +249,32 @@ mod tests {
             document["browser"]["launchOptions"]["executablePath"],
             "/usr/bin/chromium"
         );
+    }
+
+    #[test]
+    fn a_linked_file_is_skipped_as_a_symbolic_link() {
+        let linked_dock = "/home/ada/dotfiles/dock.ron";
+        let system = FakeSystem::new()
+            .with_program("codex")
+            .with_file("/home/ada/dotfiles/config.toml", "")
+            .with_link(
+                "/home/ada/.codex/config.toml",
+                "/home/ada/dotfiles/config.toml",
+            )
+            .with_file(linked_dock, CHROMIUM_DOCK)
+            .with_link(DOCK, linked_dock);
+        let report = wire(&system, &directories(), &done_snapshot(Browser::Brave));
+        assert_eq!(
+            report.skipped,
+            [
+                (
+                    PathBuf::from("/home/ada/.codex/config.toml"),
+                    SkipReason::SymbolicLink
+                ),
+                (PathBuf::from(DOCK), SkipReason::SymbolicLink),
+            ]
+        );
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert_eq!(system.file(linked_dock).as_deref(), Some(CHROMIUM_DOCK));
     }
 }

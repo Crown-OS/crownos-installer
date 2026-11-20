@@ -3,7 +3,9 @@
 //! an install adds its targets, a removal removes them and `pacman -Qq`
 //! queries them, and `pacman -U` installs the package that its file name
 //! names. A scripted result replaces this behaviour for one command line. A
-//! command line can also write files, like `npm install` does.
+//! command line can also write files, like `npm install` does. Any other
+//! program runs only when [`FakeSystem::with_program`] installed it;
+//! otherwise `run` fails like a missing binary.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -15,6 +17,8 @@ use super::{Output, System};
 use crate::error::TaskError;
 
 const FIRST_MODIFICATION_UNIX: u64 = 1_700_000_000;
+/// The kernel stops following symbolic links after 40 hops.
+const MAX_LINK_HOPS: usize = 40;
 
 #[derive(Debug, Default)]
 pub struct FakeSystem {
@@ -55,7 +59,8 @@ impl FakeSystem {
         self
     }
 
-    /// Puts the program `name` on `PATH`, as `/usr/bin/<name>`.
+    /// Puts the program `name` on `PATH`, as `/usr/bin/<name>`. `run` then
+    /// succeeds for it.
     pub fn with_program(mut self, name: &str) -> Self {
         self.programs.insert(name.to_owned());
         self
@@ -160,6 +165,25 @@ impl FakeSystem {
         self.files.borrow_mut().insert(path, contents.to_owned());
     }
 
+    /// The file or directory that `path` names after its symbolic links, or
+    /// `None` when there is none.
+    fn resolve(&self, path: &Path) -> Option<PathBuf> {
+        let mut resolved = path.to_owned();
+        for _ in 0..MAX_LINK_HOPS {
+            if self.files.borrow().contains_key(&resolved)
+                || self.directories.borrow().contains(&resolved)
+            {
+                return Some(resolved);
+            }
+            let target = self.links.borrow().get(&resolved).cloned()?;
+            resolved = match resolved.parent() {
+                Some(parent) => parent.join(target),
+                None => target,
+            };
+        }
+        None
+    }
+
     fn scripted_result(&self, command_line: &str) -> Option<Output> {
         let mut scripted_results = self.scripted_results.borrow_mut();
         let queue = scripted_results.get_mut(command_line)?;
@@ -242,6 +266,9 @@ impl System for FakeSystem {
         if program == "pacman" {
             return Ok(self.simulate_pacman(args));
         }
+        if !self.programs.contains(program) && !self.command_writes.contains_key(&line) {
+            return Err(TaskError::io(program, io::ErrorKind::NotFound.into()));
+        }
         Ok(Output {
             status: Some(0),
             ..Output::default()
@@ -274,7 +301,7 @@ impl System for FakeSystem {
     }
 
     fn read_file(&self, path: &Path) -> Result<Option<String>, TaskError> {
-        Ok(self.file(path))
+        Ok(self.resolve(path).and_then(|resolved| self.file(resolved)))
     }
 
     fn write_file(&self, path: &Path, contents: &str, _mode: u32) -> Result<(), TaskError> {
@@ -283,10 +310,10 @@ impl System for FakeSystem {
         Ok(())
     }
 
+    /// Follows symbolic links like the real filesystem: a dangling link does
+    /// not exist.
     fn exists(&self, path: &Path) -> bool {
-        self.files.borrow().contains_key(path)
-            || self.directories.borrow().contains(path)
-            || self.links.borrow().contains_key(path)
+        self.resolve(path).is_some()
     }
 
     fn is_directory(&self, path: &Path) -> bool {
@@ -354,7 +381,7 @@ impl System for FakeSystem {
                 .borrow_mut()
                 .insert(link.to_owned(), racing_target.clone());
         }
-        if self.exists(link) {
+        if self.exists(link) || self.links.borrow().contains_key(link) {
             return Err(TaskError::io(link, io::ErrorKind::AlreadyExists.into()));
         }
         self.record(format!(

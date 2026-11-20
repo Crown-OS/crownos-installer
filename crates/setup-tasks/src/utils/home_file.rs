@@ -16,8 +16,19 @@ pub fn ensure_directory(system: &dyn System, path: &Path) -> Result<(), TaskErro
     system.create_dir_all(path, HOME_DIRECTORY_MODE)
 }
 
-/// Replaces `path` atomically and makes its parent directory when it is missing.
+/// Fails with [`TaskError::SymbolicLink`] when `path` is a symbolic link. The
+/// setup never writes through a link that the user made.
+pub fn refuse_symbolic_link(system: &dyn System, path: &Path) -> Result<(), TaskError> {
+    match system.read_link(path) {
+        Some(_) => Err(TaskError::SymbolicLink(path.to_owned())),
+        None => Ok(()),
+    }
+}
+
+/// Replaces `path` atomically and makes its parent directory when it is
+/// missing. A symbolic link stays as it is: see [`refuse_symbolic_link`].
 pub fn write(system: &dyn System, path: &Path, contents: &str) -> Result<(), TaskError> {
+    refuse_symbolic_link(system, path)?;
     if let Some(parent) = path.parent() {
         ensure_directory(system, parent)?;
     }

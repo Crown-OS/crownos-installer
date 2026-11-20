@@ -19,6 +19,8 @@ pub enum TaskError {
     Incomplete,
     #[error("the system user `{0}` does not exist")]
     MissingUser(&'static str),
+    #[error("{} is a symbolic link", .0.display())]
+    SymbolicLink(PathBuf),
     #[error("could not parse {}: {message}", path.display())]
     Parse { path: PathBuf, message: String },
     #[error("could not render JSON: {0}")]

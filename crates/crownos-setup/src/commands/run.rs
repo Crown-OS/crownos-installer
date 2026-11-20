@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use crownos_config::system::{SETUP_CONFIG_PATH, SETUP_STATE_DIR};
 use crownos_setup_tasks::utils::network;
-use crownos_setup_tasks::{Context, StateStore, System, config, run_pass};
+use crownos_setup_tasks::{Context, PassSummary, StateStore, System, config, run_pass};
 
 use crate::utils::task_status;
 
@@ -16,24 +16,47 @@ const MAX_PASSES: usize = 3;
 #[derive(Debug, PartialEq, Eq)]
 struct RunSummary {
     passes: usize,
-    is_complete: bool,
+    choices_settled: bool,
+    last_pass: PassSummary,
 }
 
-/// The exit code is a failure while a task failed or waits for the network,
-/// so that the unit starts again later.
+impl RunSummary {
+    /// True when a task failed and can try again, or when the choices still
+    /// changed after the last pass. Waiting for the network and a task that
+    /// gave up do not need a retry.
+    fn needs_retry(&self) -> bool {
+        !self.choices_settled || self.last_pass.has_retryable_failure()
+    }
+}
+
+/// Exits with a failure only when a retry can help, so that the unit starts
+/// again later. NetworkManager starts the unit again when the network comes
+/// up.
 pub fn run(system: &dyn System) -> Result<ExitCode> {
     let summary = run_until_settled(system)?;
     let store = StateStore::new(system, SETUP_STATE_DIR);
     for (task, state) in store.load_all()? {
         match task_status::message(&state.status) {
+            Some(message) if state.gave_up() => tracing::warn!(
+                "{task}: failed {} times, stopped until the choices change: {message}",
+                state.attempts
+            ),
             Some(message) => tracing::warn!("{task}: failed: {message}"),
             None => tracing::info!("{task}: {}", task_status::label(&state.status)),
         }
     }
-    Ok(if summary.is_complete {
-        ExitCode::SUCCESS
-    } else {
+    let waiting_tasks = &summary.last_pass.waiting_for_network;
+    if !waiting_tasks.is_empty() {
+        let names: Vec<&str> = waiting_tasks.iter().map(|task| task.id()).collect();
+        tracing::info!(
+            "offline: {} start when the network comes up",
+            names.join(", ")
+        );
+    }
+    Ok(if summary.needs_retry() {
         ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     })
 }
 
@@ -44,9 +67,10 @@ fn run_until_settled(system: &dyn System) -> Result<RunSummary> {
     let store = StateStore::new(system, SETUP_STATE_DIR);
     let mut summary = RunSummary {
         passes: 0,
-        is_complete: false,
+        choices_settled: false,
+        last_pass: PassSummary::default(),
     };
-    while summary.passes < MAX_PASSES {
+    while summary.passes < MAX_PASSES && !summary.choices_settled {
         summary.passes += 1;
         let generation = config::generation(system, config_path);
         let setup_config = config::load_or_default(system, config_path)?;
@@ -55,19 +79,16 @@ fn run_until_settled(system: &dyn System) -> Result<RunSummary> {
             system,
             online: network::is_online(system),
         };
-        let pass_summary = run_pass(&context, &store, generation)?;
-        let choices_changed = config::generation(system, config_path) != generation
-            || config::load_or_default(system, config_path)? != setup_config;
-        summary.is_complete = pass_summary.is_complete() && !choices_changed;
-        if !choices_changed {
-            break;
-        }
+        summary.last_pass = run_pass(&context, &store, generation)?;
+        summary.choices_settled = config::generation(system, config_path) == generation
+            && config::load_or_default(system, config_path)? == setup_config;
     }
     Ok(summary)
 }
 
 #[cfg(test)]
 mod tests {
+    use crownos_config::system::SetupTask;
     use crownos_setup_tasks::context::fake::FakeSystem;
 
     use super::*;
@@ -93,21 +114,19 @@ mod tests {
             )
     }
 
-    fn summary(passes: usize, is_complete: bool) -> RunSummary {
-        RunSummary {
-            passes,
-            is_complete,
-        }
+    fn outcome(system: &FakeSystem) -> (usize, bool) {
+        let summary = run_until_settled(system).expect("runs");
+        (summary.passes, summary.needs_retry())
     }
 
     #[test]
     fn a_settled_system_completes_in_one_pass() {
         let system = ready_system().with_network();
-        assert_eq!(run_until_settled(&system).expect("runs"), summary(1, true));
+        assert_eq!(outcome(&system), (1, false));
     }
 
     #[test]
-    fn a_failed_task_is_not_complete() {
+    fn a_failed_task_needs_a_retry() {
         let system = ready_system()
             .with_network()
             .with_file(SETUP_CONFIG_PATH, CODEX_CONFIG)
@@ -115,13 +134,33 @@ mod tests {
                 "pacman -Syu --needed --noconfirm -- openai-codex",
                 "error: target not found: openai-codex",
             );
-        assert_eq!(run_until_settled(&system).expect("runs"), summary(1, false));
+        assert_eq!(outcome(&system), (1, true));
     }
 
     #[test]
-    fn waiting_for_the_network_is_not_complete() {
+    fn a_task_that_gave_up_needs_no_retry() {
+        let system = ready_system()
+            .with_network()
+            .with_file(SETUP_CONFIG_PATH, CODEX_CONFIG)
+            .with_failure(
+                "pacman -Syu --needed --noconfirm -- openai-codex",
+                "error: target not found: openai-codex",
+            );
+        assert_eq!(outcome(&system), (1, true));
+        assert_eq!(outcome(&system), (1, true));
+        assert_eq!(outcome(&system), (1, false));
+        assert_eq!(outcome(&system), (1, false));
+    }
+
+    #[test]
+    fn waiting_for_the_network_needs_no_retry() {
         let system = ready_system().with_file(SETUP_CONFIG_PATH, CODEX_CONFIG);
-        assert_eq!(run_until_settled(&system).expect("runs"), summary(1, false));
+        let summary = run_until_settled(&system).expect("runs");
+        assert_eq!(
+            summary.last_pass.waiting_for_network,
+            [SetupTask::DeveloperTools]
+        );
+        assert!(!summary.needs_retry());
         assert!(!system.is_installed("openai-codex"));
     }
 
@@ -138,7 +177,7 @@ mod tests {
                 firefox_with_codex,
             );
 
-        assert_eq!(run_until_settled(&system).expect("runs"), summary(2, true));
+        assert_eq!(outcome(&system), (2, false));
         assert!(system.is_installed("openai-codex"));
     }
 
@@ -149,6 +188,6 @@ mod tests {
             SETUP_CONFIG_PATH,
             "(browser: Chromium)",
         );
-        assert_eq!(run_until_settled(&system).expect("runs"), summary(3, false));
+        assert_eq!(outcome(&system), (3, true));
     }
 }
