@@ -31,13 +31,16 @@
 //! exist because whether a file is present is not knowable without touching the
 //! disk.
 
+use std::borrow::Cow;
 use std::fmt;
 
 use anyhow::{Context as _, Result};
 
-use crate::oobe::RootFilesystem;
+use crate::util::fstab;
 
-use super::base::{self, BOOT_ENTRY};
+use super::base;
+use super::boot;
+use super::btrfs;
 use super::disks::{self, Filesystem};
 use super::plan::{BOOT_FSLABEL, ESP_FALLBACK_LOADER, Plan, Role, Step};
 use super::probe::System;
@@ -131,11 +134,13 @@ pub enum Cmd {
         redact: &'static str,
     },
     /// Run a program and append its standard output to a file — the shell
-    /// redirect `genfstab` needs, without a shell.
+    /// redirect `genfstab` needs, without a shell — passed through `filter`
+    /// first when there is one.
     RunAppendingTo {
         program: String,
         args: Vec<String>,
         path: String,
+        filter: Option<OutputFilter>,
     },
     /// Write a file, replacing whatever was there.
     WriteFile { path: String, contents: String },
@@ -153,6 +158,31 @@ pub enum Cmd {
     /// Run a command whose failure is logged rather than stopping the install:
     /// a download the installed system can do without.
     BestEffort(Box<Cmd>),
+}
+
+/// An edit applied to a program's output before [`Cmd::RunAppendingTo`]
+/// appends it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputFilter {
+    /// See [`fstab::without_root_subvolume`].
+    FstabRootWithoutSubvolume,
+}
+
+impl OutputFilter {
+    fn apply(self, output: &str) -> Cow<'_, str> {
+        match self {
+            Self::FstabRootWithoutSubvolume => fstab::without_root_subvolume(output),
+        }
+    }
+
+    /// The same edit as a shell pipeline, so the log stays pasteable.
+    fn as_shell(self) -> &'static str {
+        match self {
+            Self::FstabRootWithoutSubvolume => {
+                "sed -E '/[[:space:]]\\/[[:space:]]/ s/,?subvol(id)?=[^,[:space:]]*//g'"
+            }
+        }
+    }
 }
 
 impl fmt::Display for Cmd {
@@ -174,7 +204,14 @@ impl fmt::Display for Cmd {
                 program,
                 args,
                 path,
-            } => write!(f, "{program} {} >> {path}", args.join(" ")),
+                filter,
+            } => {
+                write!(f, "{program} {}", args.join(" "))?;
+                if let Some(filter) = filter {
+                    write!(f, " | {}", filter.as_shell())?;
+                }
+                write!(f, " >> {path}")
+            }
             Self::WriteFile { path, contents } => write_display(f, path, contents, false),
             Self::WriteFileIfAbsent { path, contents } => write_display(f, path, contents, true),
             Self::CopyIfPresent { from, to } => write!(f, "cp {from} {to} (if {from} exists)"),
@@ -265,8 +302,13 @@ impl Cmd {
                 program,
                 args,
                 path,
+                filter,
             } => {
                 let output = system.run(program, &borrow(args))?;
+                let output = match filter {
+                    Some(filter) => filter.apply(&output),
+                    None => Cow::Borrowed(output.as_str()),
+                };
                 let existing = system.read_file(path).unwrap_or_default();
                 system.write_file(path, &(existing + &output))?;
                 Ok(String::new())
@@ -472,14 +514,11 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             Cmd::run("udevadm", &["settle"]),
         ],
 
-        Step::MakeFilesystem {
-            device,
-            filesystem,
-            label,
-        } => match filesystem {
-            RootFilesystem::Ext4 => vec![Cmd::run("mkfs.ext4", &["-F", "-L", label, device])],
-            RootFilesystem::Btrfs => vec![Cmd::run("mkfs.btrfs", &["-f", "-L", label, device])],
-        },
+        Step::MakeFilesystem { device, label } => {
+            vec![Cmd::run("mkfs.btrfs", &["-f", "-L", label, device])]
+        }
+
+        Step::CreateSubvolumes { device } => btrfs::create_subvolumes(device),
 
         Step::MakeEsp { device } => {
             vec![disks::mkfs(device, Filesystem::Fat32, Some(BOOT_FSLABEL))]
@@ -490,10 +529,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             Cmd::run("swapon", &[device]),
         ],
 
-        Step::MountRoot { device, at } => vec![
-            Cmd::MakeDirs { path: at.clone() },
-            Cmd::run("mount", &[device, at]),
-        ],
+        Step::MountRoot { device, at } => btrfs::mount_all(device, at),
 
         Step::MountEsp { device, at } => vec![
             Cmd::MakeDirs { path: at.clone() },
@@ -521,45 +557,10 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             // on device names any more than this installer does.
             args: vec!["-U".to_owned(), root.clone()],
             path: format!("{root}/etc/fstab"),
+            filter: Some(OutputFilter::FstabRootWithoutSubvolume),
         }],
 
-        Step::CreateSwapFile {
-            root,
-            size_bytes,
-            filesystem,
-        } => {
-            let megabytes = (size_bytes / (1024 * 1024)).max(1);
-            let mut commands = match filesystem {
-                // btrfs swapfiles need the filesystem's own tool: a plain file
-                // on btrfs is not contiguous and the kernel refuses to swap to
-                // it.
-                RootFilesystem::Btrfs => vec![Cmd::chroot(
-                    root,
-                    "btrfs",
-                    &[
-                        "filesystem",
-                        "mkswapfile",
-                        "--size",
-                        &format!("{megabytes}m"),
-                        "/swapfile",
-                    ],
-                )],
-                RootFilesystem::Ext4 => vec![Cmd::chroot(
-                    root,
-                    "mkswap",
-                    &["--size", &format!("{megabytes}M"), "--file", "/swapfile"],
-                )],
-            };
-            commands.push(Cmd::RunAppendingTo {
-                program: "printf".to_owned(),
-                args: vec![
-                    "%s\\n".to_owned(),
-                    "/swapfile none swap defaults 0 0".to_owned(),
-                ],
-                path: format!("{root}/etc/fstab"),
-            });
-            commands
-        }
+        Step::CreateSwapFile { root, size_bytes } => btrfs::swapfile(root, *size_bytes),
 
         Step::ConfigureCompressedMemory { root, percent } => {
             base::compressed_memory(root, *percent)
@@ -618,39 +619,18 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             esp_rel,
             root_partuuid,
             kernel_cmdline,
+            origin,
             ..
-        } => {
-            let mut commands = vec![
-                Cmd::chroot(
-                    root,
-                    "bootctl",
-                    &[&format!("--esp-path={esp_rel}"), "install"],
-                ),
-                // Written only if absent: a `loader.conf` already on the ESP was
-                // put there by something else, and its `default` line decides
-                // what this machine boots.
-                Cmd::WriteFileIfAbsent {
-                    path: format!("{root}{esp_rel}/loader/loader.conf"),
-                    contents: format!(
-                        "default {BOOT_ENTRY}.conf\ntimeout 5\nconsole-mode keep\neditor no\n"
-                    ),
-                },
-                base::boot_entry(root, esp_rel, kernel_cmdline),
-            ];
-            commands.extend([
-                Cmd::WriteFile {
-                    path: format!("{root}/etc/kernel/cmdline"),
-                    contents: format!("{kernel_cmdline}\n"),
-                },
-                Cmd::WriteFile {
-                    path: format!("{root}/etc/crownos-root-partuuid"),
-                    contents: format!("{root_partuuid}\n"),
-                },
-            ]);
-            commands
-        }
+        } => boot::install_bootloader(root, esp_rel, kernel_cmdline, root_partuuid, *origin),
 
-        Step::InstallKernel { root, esp_rel, .. } => base::install_kernel(root, esp_rel),
+        Step::InstallKernel { root, esp_rel, .. } => boot::install_kernel(root, esp_rel),
+
+        Step::PrepareRecovery {
+            root,
+            esp_rel,
+            origin,
+            ..
+        } => boot::prepare_recovery(root, esp_rel, *origin),
 
         Step::CreateUser {
             root,
@@ -743,21 +723,7 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
             }]
         }
 
-        Step::GrowRootFilesystem { device, filesystem } => match filesystem {
-            RootFilesystem::Ext4 => vec![
-                // `resize2fs` refuses to touch a filesystem that has not been
-                // checked since its last mount, and the mount it just had was
-                // the install.
-                Cmd::run("e2fsck", &["-f", "-y", device]),
-                Cmd::run("resize2fs", &[device]),
-            ],
-            // The planner does not emit this for btrfs — growing one needs it
-            // mounted. If it ever does, failing loudly beats a silent no-op.
-            RootFilesystem::Btrfs => vec![Cmd::Run {
-                program: "false".to_owned(),
-                args: vec!["growing a mounted btrfs is not implemented".to_owned()],
-            }],
-        },
+        Step::GrowRootFilesystem { device } => btrfs::grow(device),
     }
 }
 
@@ -805,7 +771,6 @@ mod tests {
                 swap: SwapPlan::File {
                     size_bytes: 8 * 1024 * 1024 * 1024,
                 },
-                root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
                 windows_apps: crate::oobe::WindowsApps::Disabled,
@@ -949,7 +914,8 @@ mod tests {
             let is_destructive = line.contains("mkfs")
                 || line.contains("--delete")
                 || line.contains("mkswap")
-                || line.contains("resize2fs");
+                || line.contains("btrfs filesystem resize")
+                || line.contains("btrfs subvolume");
             assert!(
                 !(touches_protected && is_destructive),
                 "destructive command against a protected partition: {line}"
@@ -1000,11 +966,23 @@ mod tests {
             c,
             Cmd::WriteFileIfAbsent { path, .. } if path.ends_with("loader/loader.conf")
         )));
-        // Our own entry, on the other hand, is ours to overwrite.
-        assert!(commands.iter().any(|c| matches!(
-            c,
-            Cmd::WriteFile { path, .. } if path.ends_with("loader/entries/crownos.conf")
-        )));
+        // Our own entries, on the other hand, are ours to overwrite.
+        for entry in [
+            "loader/entries/crownos.conf",
+            "loader/entries/crownos-recover.conf",
+        ] {
+            assert!(commands.iter().any(|c| matches!(
+                c,
+                Cmd::WriteFile { path, .. } if path.ends_with(entry)
+            )));
+        }
+        let position = |needle: &str| {
+            commands
+                .iter()
+                .position(|c| c.to_string().contains(needle))
+                .unwrap_or_else(|| panic!("{needle} missing"))
+        };
+        assert!(position("loader/loader.conf") < position("bootctl --esp-path=/efi install"));
         // And nothing goes near Windows' own directory.
         for command in &commands {
             assert!(!command.to_string().contains("EFI/Microsoft"), "{command}");
@@ -1152,7 +1130,6 @@ mod tests {
             .expect("a gap");
         let mut oobe = payload_like(disk.bytes(gap.start_sector), disk.bytes(gap.sectors));
         oobe.staging.reclaim_after_install = true;
-        oobe.install.root_filesystem = crate::oobe::RootFilesystem::Ext4;
 
         let plan = plan::plan(&PlanInput {
             oobe: &oobe,
@@ -1178,16 +1155,73 @@ mod tests {
             log.contains(&format!("start={}", plan.root.start_sector)),
             "the grow must keep root's original start: {log}"
         );
-        assert!(log.contains("resize2fs"), "{log}");
-        // And the grow happens after the unmount, never with the filesystem
-        // mounted.
+        // The grow runs after the install's unmount, on a mount of its own,
+        // and on the root partition rather than the deleted staging one.
         let umount = log.find("umount --recursive").expect("an unmount");
-        let grow = log.find("resize2fs").expect("a resize");
-        assert!(umount < grow, "{log}");
+        let mount = log
+            .find(&format!(
+                "mount {} /run/crownos-installer/grow",
+                plan.root.path
+            ))
+            .expect("the root is mounted to grow it");
+        let grow = log
+            .find("btrfs filesystem resize max /run/crownos-installer/grow")
+            .expect("a resize");
+        assert!(umount < mount && mount < grow, "{log}");
         let stop_gnupg = log
             .find("gpgconf --homedir /mnt/etc/pacman.d/gnupg --kill all")
             .expect("the keyring daemons are stopped");
         assert!(stop_gnupg < umount, "{log}");
+    }
+
+    #[test]
+    fn seeding_the_recovery_kernel_is_best_effort_on_a_shared_esp() {
+        let plan = a_plan();
+        let step = plan
+            .steps
+            .iter()
+            .find(|s| matches!(s, Step::PrepareRecovery { .. }))
+            .expect("a recovery step");
+        let commands = commands_for(&plan, &secrets(), step);
+        let seed = commands
+            .iter()
+            .find(|c| c.to_string().contains("crownos-esp-kernel seed"))
+            .expect("a seed");
+        assert!(matches!(seed, Cmd::BestEffort(_)), "{seed}");
+    }
+
+    #[test]
+    fn the_swapfile_lives_in_its_own_subvolume() {
+        let log = dry_run_log(&a_plan());
+        assert!(
+            log.contains("btrfs filesystem mkswapfile --size 8192m /swap/swapfile"),
+            "{log}"
+        );
+        assert!(log.contains("@swap"), "{log}");
+        assert!(!log.contains(" /swapfile"), "{log}");
+    }
+
+    #[test]
+    fn a_filtered_append_strips_the_root_subvolume() {
+        let output = "UUID=1\t/\tbtrfs\trw,compress=zstd,subvolid=256,subvol=/@\t0 0\n\
+                      UUID=1\t/home\tbtrfs\trw,subvol=/@home\t0 0\n";
+        let system = fixture::FakeSystem::new().with_command("genfstab -U /mnt", output);
+        let command = Cmd::RunAppendingTo {
+            program: "genfstab".to_owned(),
+            args: vec!["-U".to_owned(), "/mnt".to_owned()],
+            path: "/mnt/etc/fstab".to_owned(),
+            filter: Some(OutputFilter::FstabRootWithoutSubvolume),
+        };
+        command.apply(&system).expect("apply");
+        let expected = fstab::without_root_subvolume(output);
+        assert!(expected.len() < output.len());
+        assert!(
+            system
+                .journal()
+                .contains(&format!("write /mnt/etc/fstab ({} bytes)", expected.len())),
+            "{:?}",
+            system.journal()
+        );
     }
 
     fn payload_like(free_start: u64, free_bytes: u64) -> Oobe {
@@ -1199,7 +1233,6 @@ mod tests {
                 auto_install: false,
                 allocated_bytes: free_bytes,
                 swap: SwapPlan::None,
-                root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
                 windows_apps: crate::oobe::WindowsApps::Disabled,

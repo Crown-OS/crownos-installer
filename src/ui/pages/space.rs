@@ -4,7 +4,8 @@
 use crownui::kit::{ButtonVariant, Choice, choice_list, icons};
 use crownui::prelude::{Cx, Signal, Styled, View, keyed, vstack};
 
-use crate::engine::plan::{BOOT_BYTES, MIN_ROOT_BYTES, Plan, bytes, filesystem_name};
+use crate::engine::btrfs;
+use crate::engine::plan::{BOOT_BYTES, MIN_ROOT_BYTES, Plan, bytes};
 use crate::ui::Wizard;
 use crate::ui::components::{Tone, alert, note, surface};
 use crate::ui::layout::{BLOCK_GAP, PageParts, TILE_GAP, caption, next_pill, nothing, wizard_pill};
@@ -119,7 +120,7 @@ pub fn layout_summary(plan: &Plan) -> String {
                 .map_or(BOOT_BYTES, |boot| boot.size_bytes())
         ),
         bytes(plan.root.size_bytes()),
-        filesystem_name(plan.root_filesystem),
+        btrfs::FILESYSTEM_NAME,
     )
 }
 

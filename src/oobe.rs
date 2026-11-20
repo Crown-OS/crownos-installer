@@ -117,8 +117,6 @@ pub struct Install {
     pub allocated_bytes: u64,
     /// How to provide swap.
     pub swap: SwapPlan,
-    /// The root filesystem.
-    pub root_filesystem: RootFilesystem,
     /// Whether the Windows install must be preserved.
     ///
     /// Always `true` in the dual-boot flow this schema exists for. It is written
@@ -177,18 +175,6 @@ pub enum SwapPlan {
     File { size_bytes: u64 },
     /// A dedicated swap partition carved out of the allocated region.
     Partition { size_bytes: u64 },
-}
-
-/// The filesystem for the root partition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RootFilesystem {
-    /// The default. Boring, universally recoverable, and what a dual-boot user
-    /// hunting for a rescue tool is most likely to find support for.
-    #[default]
-    Ext4,
-    /// Subvolumes and snapshots, for a user who asked for them.
-    Btrfs,
 }
 
 // --- MARK: Target ---
@@ -379,7 +365,6 @@ mod tests {
                 swap: SwapPlan::File {
                     size_bytes: 8 * 1024 * 1024 * 1024,
                 },
-                root_filesystem: RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
                 windows_apps: crate::oobe::WindowsApps::Disabled,
@@ -431,6 +416,17 @@ mod tests {
         assert_eq!(parsed, sample());
     }
 
+    /// Every root is btrfs now. A payload written while the choice existed
+    /// still names one, and it is read and ignored.
+    #[test]
+    fn a_payload_that_still_names_a_root_filesystem_is_read() {
+        let mut json: serde_json::Value =
+            serde_json::from_str(&sample().to_json().expect("serialize")).expect("valid json");
+        json["install"]["root_filesystem"] = "ext4".into();
+        let parsed: Oobe = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(parsed, sample());
+    }
+
     #[test]
     fn a_payload_with_no_user_round_trips() {
         let mut original = sample();
@@ -475,7 +471,6 @@ mod tests {
         "auto_install": false,
         "allocated_bytes": 137438953472,
         "swap": { "kind": "file", "size_bytes": 8589934592 },
-        "root_filesystem": "ext4",
         "keep_windows": true
       },
       "target": {

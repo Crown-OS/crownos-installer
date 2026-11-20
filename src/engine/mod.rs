@@ -13,7 +13,8 @@
 //!   safety rule in it a unit test rather than a code review. If the disk is not
 //!   in a state we are willing to touch, this is where it is refused.
 //! * [`base`] is the Arch Linux base under the desktop: how it and the CrownOS
-//!   desktop get onto the disk, locales, the kernel.
+//!   desktop get onto the disk, locales, the repositories. [`btrfs`] lays out
+//!   the root filesystem and [`boot`] the boot loader and recovery entry.
 //! * [`exec`] walks a plan and runs it, or — in [`exec::Mode::DryRun`] — prints
 //!   exactly what it would have run.
 //!
@@ -31,6 +32,8 @@
 
 pub mod ai;
 pub mod base;
+pub mod boot;
+pub mod btrfs;
 pub mod disks;
 pub mod exec;
 pub mod graphics;

@@ -425,7 +425,6 @@ pub(crate) mod tests {
                 auto_install: true,
                 allocated_bytes: 128 * 1024 * 1024 * 1024,
                 swap: crate::oobe::SwapPlan::None,
-                root_filesystem: crate::oobe::RootFilesystem::Ext4,
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
                 windows_apps: crate::oobe::WindowsApps::Disabled,

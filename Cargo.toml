@@ -40,6 +40,8 @@ tokio = { version = "1", default-features = false, features = [
 [dev-dependencies]
 # Drives the whole window headlessly: every page built in every state.
 crowntest = { path = "../crownui/crowntest" }
+# Captures every page as editable layers for the CrownOS-Design Figma file.
+capture = { path = "../crownui/capture" }
 # Offscreen Impeller renders of every page, for looking at (an ignored test).
 impeller = { path = "../crownui/impeller", features = ["static"] }
 taffy-layout = { path = "../crownui/taffy-layout" }

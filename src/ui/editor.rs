@@ -33,8 +33,9 @@ use crate::engine::probe::{Disk, Gap, SystemSnapshot};
 
 /// The filesystems the editor offers, in the order they appear in the picker.
 ///
-/// `ext4` first because it is the one a CrownOS root should be unless the user
-/// has a reason; `swap` last because it is not a filesystem anyone browses.
+/// The root is always btrfs and never made here; these are for the partitions
+/// the user adds beside it. `ext4` first because it is the plain choice for a
+/// data partition; `swap` last because it is not a filesystem anyone browses.
 pub const FILESYSTEMS: &[Filesystem] = &[
     Filesystem::Ext4,
     Filesystem::Btrfs,

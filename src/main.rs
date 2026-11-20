@@ -152,7 +152,7 @@ fn main() -> ExitCode {
         Mode::Commit
     };
 
-    let startup = start_up(&args);
+    let startup = start_up(&args, options.dry_run || options.print_plan);
 
     if options.print_plan {
         return print_plan(startup);
@@ -178,7 +178,7 @@ fn main() -> ExitCode {
 /// cannot be read is a machine nothing can be installed on. The first fails only
 /// when a configuration file was found and cannot be trusted; see
 /// [`provenance`].
-fn start_up(args: &cmdline::CmdlineArgs) -> Result<ui::Context, ui::Blocker> {
+fn start_up(args: &cmdline::CmdlineArgs, rehearsal: bool) -> Result<ui::Context, ui::Blocker> {
     let system = RealSystem;
 
     let detected = provenance::detect(args, &payload::RealMedium(&system)).map_err(|blocked| {
@@ -198,7 +198,7 @@ fn start_up(args: &cmdline::CmdlineArgs) -> Result<ui::Context, ui::Blocker> {
         }
     })?;
 
-    let snapshot = probe(&system).map_err(|error| ui::Blocker {
+    let mut snapshot = probe(&system).map_err(|error| ui::Blocker {
         title: "The disks could not be read".to_owned(),
         detail: format!(
             "{error:#}\n\nNothing has been changed. This usually means a tool the \
@@ -206,6 +206,10 @@ fn start_up(args: &cmdline::CmdlineArgs) -> Result<ui::Context, ui::Blocker> {
         ),
         notes: detected.notes.clone(),
     })?;
+    let mut notes = detected.notes;
+    if rehearsal {
+        rehearse_without_live_image(&mut snapshot, &mut notes);
+    }
 
     // A payload may ask to skip what can be skipped. A flashed image never can:
     // there is nothing to skip *to*, because nothing has been answered yet.
@@ -216,12 +220,29 @@ fn start_up(args: &cmdline::CmdlineArgs) -> Result<ui::Context, ui::Blocker> {
 
     Ok(ui::Context {
         provenance: detected.provenance,
-        notes: detected.notes,
+        notes,
         snapshot,
         auto_install,
         ids: new_ids(&system),
         online: util::network::has_default_route(),
     })
+}
+
+/// A developer's machine has neither the repository key nor the manifest a
+/// CrownOS image ships, and a rehearsal (`--dry-run`, `--print-plan`) should
+/// still plan. A real run refuses.
+fn rehearse_without_live_image(
+    snapshot: &mut engine::probe::SystemSnapshot,
+    notes: &mut Vec<String>,
+) {
+    if snapshot.crownos_repo_key && snapshot.published_packages.is_some() {
+        return;
+    }
+    snapshot.crownos_repo_key = true;
+    snapshot.published_packages.get_or_insert_with(Vec::new);
+    notes.push(
+        "rehearsal: pretending the live image ships the repository key and manifest".to_owned(),
+    );
 }
 
 /// `--autoinstall`: the whole install with no window, reported on stdout.

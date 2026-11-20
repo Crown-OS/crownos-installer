@@ -576,7 +576,7 @@ fn the_install_page_shows_finished_running_and_waiting_steps() {
     wizard.on_install_event(Event::StepStarted {
         index: 3,
         total: 20,
-        label: "Mounting the new system".to_owned(),
+        label: "Creating the btrfs subvolumes".to_owned(),
     });
     let mut app = window(wizard);
     let value = |app: &mut TestApp, name: &str| {
@@ -585,7 +585,10 @@ fn the_install_page_shows_finished_running_and_waiting_steps() {
             .unwrap_or_default()
     };
     assert_eq!(value(&mut app, "Re-reading the partition table"), "Done");
-    assert_eq!(value(&mut app, "Mounting the new system"), "In progress");
+    assert_eq!(
+        value(&mut app, "Creating the btrfs subvolumes"),
+        "In progress"
+    );
     let progress = app.find(role(Role::ProgressBar).name("Overall progress"));
     assert_eq!(progress.value.as_deref(), Some("15%"));
 }

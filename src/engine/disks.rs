@@ -130,9 +130,8 @@ pub const MIN_USEFUL_ESP_BYTES: u64 = 100 * 1024 * 1024;
 
 /// A filesystem this editor can create.
 ///
-/// Wider than [`RootFilesystem`], which is only the two a CrownOS root may be:
-/// an editor also has to make an ESP (`fat32`) and a swap area, and people
-/// legitimately want an `xfs` home.
+/// Wider than a CrownOS root, which is always btrfs: an editor also has to make
+/// an ESP (`fat32`) and a swap area, and people legitimately want an `xfs` home.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Filesystem {
     Ext4,

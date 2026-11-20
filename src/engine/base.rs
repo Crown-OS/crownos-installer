@@ -1,16 +1,14 @@
 //! The Arch Linux base CrownOS is layered on: how it and the CrownOS desktop get
 //! onto the disk from the packages the live image bundles, how the installed
 //! system is pointed at the CachyOS, Arch and CrownOS repositories for updates,
-//! how locales and the kernel are handled.
+//! and how locales are handled. The kernel and boot loader are [`boot`](super::boot)'s.
 //!
 //! Every function returns commands and runs nothing, so the plan stays a value
 //! and a dry run stays a faithful rehearsal.
 
-use crate::oobe::RootFilesystem;
 use crate::util::cpuinfo::Microarch;
 
 use super::exec::Cmd;
-use super::plan::ESP_CROWNOS_DIR;
 use super::repos;
 
 /// Where CrownOS packages are published.
@@ -23,16 +21,25 @@ pub const REPO_KEY_LIVE_PATH: &str = "/usr/share/crownos/crownos-archive-keyring
 /// of a fingerprint.
 pub const REPO_KEY_UID: &str = "packages@crownos.org";
 
-/// The meta-package that pulls in the compositor and every system app.
-pub const DESKTOP_PACKAGE: &str = "crownos-desktop";
+/// The live image's copy of the published manifest. Its `packages` array is
+/// the complete set of CrownOS components an installed system must have.
+pub const MANIFEST_LIVE_PATH: &str = "/usr/share/crownos/manifest.toml";
+
+/// Installed whatever the manifest says: the snapshot stack, the system
+/// defaults with the boot recovery hooks, the release identity and the key
+/// the repository is signed with.
+pub const REQUIRED_CROWNOS: &[&str] = &[
+    "snapper",
+    "snap-pac",
+    "crownos-base",
+    "crownos-release",
+    "crownos-keyring",
+];
 
 /// The live image's repository of every package [`packages`] can name, with its
 /// dependencies. Its `CacheDir` is the repository itself, so `pacstrap -c`
 /// installs straight from it with no network and no copy.
 pub const OFFLINE_PACMAN_CONF: &str = "/etc/pacman.d/crownos-offline.conf";
-
-/// The boot loader entry's name: `loader/entries/<this>.conf`.
-pub const BOOT_ENTRY: &str = "crownos";
 
 /// The group whose members may use `sudo`.
 pub const ADMIN_GROUP: &str = "wheel";
@@ -43,9 +50,10 @@ pub const SERVICES: &[&str] = &[
     "NetworkManager.service",
     "systemd-timesyncd.service",
     "power-profiles-daemon.service",
+    "snapper-cleanup.timer",
 ];
 
-/// Installs Wine on the first boot that is online. Shipped by [`DESKTOP_PACKAGE`].
+/// Installs Wine on the first boot that is online. Shipped by crownos-base.
 pub const WINDOWS_APPS_SERVICE: &str = "crownos-windows-apps.service";
 
 /// Compressed swap in RAM, as a share of physical memory. Settings resizes it
@@ -65,7 +73,7 @@ const AUTOLOGIN_DROP_IN: &str = "/etc/systemd/system/getty@tty1.service.d/autolo
 pub const KERNEL: &str = "linux-cachyos";
 
 /// Deliberately short: the set that makes the machine boot, reach the network
-/// and let a user log in. The desktop comes from [`DESKTOP_PACKAGE`].
+/// and let a user log in. The desktop comes from the published manifest.
 const BASE_PACKAGES: &[&str] = &[
     "base",
     "linux-firmware",
@@ -85,19 +93,21 @@ const REPO_KEY_PATH: &str = "/etc/pacman.d/crownos-archive-keyring.asc";
 
 const PACMAN_GNUPG_DIR: &str = "/etc/pacman.d/gnupg";
 
-/// The packages `pacstrap` installs. crownos-iso's `profile/install.packages`
-/// must name every one of them, or the live image cannot install offline.
-pub fn packages(filesystem: RootFilesystem) -> Vec<String> {
-    let btrfs = (filesystem == RootFilesystem::Btrfs).then_some(BTRFS_PACKAGE);
-    BASE_PACKAGES
+/// The packages `pacstrap` installs: the base, and every CrownOS package the
+/// manifest `published`. crownos-iso's `profile/install.packages` must name
+/// every one of them, or the live image cannot install offline.
+pub fn packages(published: &[String]) -> Vec<String> {
+    let mut packages: Vec<String> = BASE_PACKAGES
         .iter()
-        .copied()
-        .chain([KERNEL])
-        .chain(repos::PACKAGES.iter().copied())
-        .chain(btrfs)
-        .chain([DESKTOP_PACKAGE])
-        .map(str::to_owned)
-        .collect()
+        .chain(&[KERNEL, BTRFS_PACKAGE])
+        .chain(repos::PACKAGES)
+        .chain(REQUIRED_CROWNOS)
+        .map(|name| (*name).to_owned())
+        .chain(published.iter().cloned())
+        .collect();
+    packages.sort_unstable();
+    packages.dedup();
+    packages
 }
 
 /// Put the base system and the desktop into `root`, from the live image's
@@ -152,7 +162,8 @@ pub fn configure_repositories(root: &str, microarch: Microarch) -> Cmd {
 }
 
 /// Trust the CrownOS repository, so the installed system updates from it.
-/// Listed last, after the CachyOS and Arch repositories.
+/// Listed last, after the CachyOS and Arch repositories, and on the stable
+/// channel, which moves only when an ISO is released.
 pub fn add_crownos_repository(root: &str) -> Vec<Cmd> {
     vec![
         Cmd::run(
@@ -168,11 +179,13 @@ pub fn add_crownos_repository(root: &str) -> Vec<Cmd> {
         Cmd::RunAppendingTo {
             program: "printf".to_owned(),
             args: vec![
-                "\\n%s\\n%s\\n".to_owned(),
+                "\\n%s\\n%s\\n%s\\n".to_owned(),
                 "[crownos]".to_owned(),
-                format!("Server = {REPO_URL}/arch/$arch"),
+                "SigLevel = Required DatabaseOptional".to_owned(),
+                format!("Server = {REPO_URL}/stable/$arch"),
             ],
             path: format!("{root}/etc/pacman.conf"),
+            filter: None,
         },
     ]
 }
@@ -204,80 +217,24 @@ pub fn configure_locale(root: &str, locale: &str) -> Vec<Cmd> {
     ]
 }
 
-/// The systemd-boot entry. systemd-boot finds Windows by itself, so there is
-/// deliberately no Windows entry and nothing of Windows' to go stale.
-pub fn boot_entry(root: &str, esp_rel: &str, kernel_cmdline: &str) -> Cmd {
-    Cmd::WriteFile {
-        path: format!("{root}{esp_rel}/loader/entries/{BOOT_ENTRY}.conf"),
-        contents: format!(
-            "title   CrownOS\n\
-             linux   /{ESP_CROWNOS_DIR}/vmlinuz-{KERNEL}\n\
-             initrd  /{ESP_CROWNOS_DIR}/initramfs-{KERNEL}.img\n\
-             options {kernel_cmdline}\n"
-        ),
-    }
-}
-
-/// systemd-boot cannot read ext4 or btrfs, so the kernel and initramfs live on
-/// the ESP. A preset pointing mkinitcpio straight at it means `pacman -Syu`
-/// keeps them current instead of this being a one-time copy.
-pub fn install_kernel(root: &str, esp_rel: &str) -> Vec<Cmd> {
-    vec![
-        Cmd::MakeDirs {
-            path: format!("{root}{esp_rel}/{ESP_CROWNOS_DIR}"),
-        },
-        Cmd::WriteFile {
-            path: format!("{root}/etc/mkinitcpio.d/{KERNEL}.preset"),
-            contents: format!(
-                "ALL_kver=\"/boot/vmlinuz-{KERNEL}\"\n\
-                 PRESETS=('default')\n\
-                 default_image=\"{esp_rel}/{ESP_CROWNOS_DIR}/initramfs-{KERNEL}.img\"\n"
-            ),
-        },
-        Cmd::chroot(root, "mkinitcpio", &["-P"]),
-        copy_kernel_to_esp(root, esp_rel),
-    ]
-}
-
-/// Copy the kernel onto the ESP beside the initramfs mkinitcpio keeps there.
-/// Run again after any `pacman -Syu` during the install, which may replace it.
-pub fn copy_kernel_to_esp(root: &str, esp_rel: &str) -> Cmd {
-    Cmd::chroot(
-        root,
-        "cp",
-        &[
-            "--",
-            &format!("/boot/vmlinuz-{KERNEL}"),
-            &format!("{esp_rel}/{ESP_CROWNOS_DIR}/vmlinuz-{KERNEL}"),
-        ],
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn btrfs_pulls_in_its_tools_and_ext4_does_not() {
-        assert!(
-            packages(RootFilesystem::Btrfs)
-                .iter()
-                .any(|p| p == BTRFS_PACKAGE)
-        );
-        assert!(
-            !packages(RootFilesystem::Ext4)
-                .iter()
-                .any(|p| p == BTRFS_PACKAGE)
-        );
+    fn every_install_gets_the_recovery_stack_and_the_published_packages() {
+        let published = ["crownbar".to_owned(), "crownbar".to_owned()];
+        let packages = packages(&published);
+        for expected in REQUIRED_CROWNOS.iter().chain(&[BTRFS_PACKAGE, KERNEL]) {
+            assert!(packages.iter().any(|p| p == expected), "{expected} missing");
+        }
+        assert_eq!(packages.iter().filter(|p| *p == "crownbar").count(), 1);
+        assert!(!packages.iter().any(|p| p == "crownos-desktop"));
+        assert!(packages.is_sorted());
     }
 
     #[test]
-    fn the_desktop_is_installed_from_the_bundled_packages() {
-        assert!(
-            packages(RootFilesystem::Ext4)
-                .iter()
-                .any(|p| p == DESKTOP_PACKAGE)
-        );
+    fn pacstrap_installs_offline_from_the_bundled_packages() {
         let Cmd::Run { program, args } = bootstrap("/mnt", &[]) else {
             panic!("pacstrap runs in the live system");
         };
@@ -291,7 +248,14 @@ mod tests {
             .iter()
             .map(|command| format!("{command}\n"))
             .collect();
-        for expected in [REPO_URL, REPO_KEY_LIVE_PATH, "/mnt/etc/pacman.conf"] {
+        for expected in [
+            REPO_URL,
+            REPO_KEY_LIVE_PATH,
+            "/mnt/etc/pacman.conf",
+            "SigLevel = Required DatabaseOptional",
+            "Server = https://repo.crownos.org/stable/$arch",
+            "printf \\n%s\\n%s\\n%s\\n [crownos]",
+        ] {
             assert!(log.contains(expected), "{expected} missing from {log}");
         }
         assert!(!log.contains("pacman -S"), "nothing is downloaded: {log}");
@@ -310,16 +274,6 @@ mod tests {
                 .lines()
                 .any(|line| line == "zram-size = ram * 50 / 100")
         );
-    }
-
-    #[test]
-    fn the_boot_entry_lives_where_the_loader_default_points() {
-        let Cmd::WriteFile { path, contents } = boot_entry("/mnt", "/efi", "root=PARTUUID=x rw")
-        else {
-            panic!("the boot entry is a file");
-        };
-        assert_eq!(path, format!("/mnt/efi/loader/entries/{BOOT_ENTRY}.conf"));
-        assert!(contents.ends_with("options root=PARTUUID=x rw\n"));
     }
 
     #[test]

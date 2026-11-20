@@ -3,8 +3,8 @@
 use crownui::kit::{ButtonVariant, icons};
 use crownui::prelude::{Cx, Signal, Styled, View, vstack};
 
+use crate::engine::btrfs;
 use crate::engine::plan::{Plan, bytes};
-use crate::oobe::RootFilesystem;
 use crate::ui::Wizard;
 use crate::ui::components::{Outcome, Tone, hero_badge, note, summary_tile, surface};
 use crate::ui::layout::{BLOCK_GAP, PageParts, caption, restart_pill, tiles};
@@ -53,12 +53,9 @@ fn summary_tiles(plan: &Plan, dual_boot: bool) -> impl View + use<> {
         Some(name) => format!("{} — {name}", plan.account.username),
         None => plan.account.username.clone(),
     };
-    let filesystem = match plan.root_filesystem {
-        RootFilesystem::Ext4 => "ext4",
-        RootFilesystem::Btrfs => "btrfs",
-    };
+    let filesystem = btrfs::FILESYSTEM_NAME;
     let startup = if dual_boot {
-        "The boot menu offers CrownOS and Windows"
+        "Hold Space while the computer starts to choose Windows or recovery"
     } else {
         "CrownOS starts by default"
     };

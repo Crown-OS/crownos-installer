@@ -8,7 +8,7 @@
 
 use crate::util::pci::{Accelerator, AcceleratorVendor, NvidiaGeneration};
 
-use super::base;
+use super::boot;
 use super::exec::Cmd;
 use super::plan::ESP_MOUNT_REL;
 
@@ -110,7 +110,7 @@ impl GraphicsPlan {
             let mut args = vec!["-Syu", "--needed", "--noconfirm"];
             args.extend(&self.online_packages);
             commands.push(Cmd::best_effort(Cmd::chroot(root, "pacman", &args)));
-            commands.push(base::copy_kernel_to_esp(root, ESP_MOUNT_REL));
+            commands.push(boot::copy_kernel_to_esp(root, ESP_MOUNT_REL));
         }
         commands
     }
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn kernel_packages_match_the_installed_kernel() {
         for package in [NVIDIA_OPEN_PACKAGES[0], NVIDIA_580_PACKAGES[0]] {
-            assert!(package.starts_with(&format!("{}-", base::KERNEL)));
+            assert!(package.starts_with(&format!("{}-", crate::engine::base::KERNEL)));
         }
     }
 }

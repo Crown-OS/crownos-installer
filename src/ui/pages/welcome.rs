@@ -3,8 +3,8 @@
 use crownui::kit::{ButtonVariant, Segment, icons, segmented_bar};
 use crownui::prelude::{Color, Cx, Signal, Styled, View, hstack, rgb, vstack};
 
+use crate::engine::btrfs;
 use crate::engine::plan::{Plan, bytes};
-use crate::oobe::RootFilesystem;
 use crate::ui::Wizard;
 use crate::ui::components::{summary_tile, surface};
 use crate::ui::layout::{BLOCK_GAP, PageParts, caption, muted, tiles, wizard_pill};
@@ -72,10 +72,7 @@ fn legend_item(color: Color, label: String) -> impl View {
 /// list on the confirmation page; repeating it here would be a second
 /// description that can drift from the one that runs.
 fn facts(plan: &Plan) -> impl View + use<> {
-    let filesystem = match plan.root_filesystem {
-        RootFilesystem::Ext4 => "ext4",
-        RootFilesystem::Btrfs => "btrfs",
-    };
+    let filesystem = btrfs::FILESYSTEM_NAME;
     let swap = match (&plan.swap_partition, plan.swap_file_bytes) {
         (Some(partition), _) => format!("{} swap partition", bytes(partition.size_bytes())),
         (None, Some(size)) => format!("{} swap file", bytes(size)),

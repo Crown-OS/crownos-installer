@@ -15,8 +15,7 @@ use crate::engine::plan::{NewIds, Refusal, Step};
 use crate::engine::probe::{self, fixture};
 use crate::oobe::Oobe;
 use crate::oobe::{
-    Install, Locale, RootFilesystem, Staging, StagingKind, SwapPlan, Target as OobeTarget,
-    UserAccount, WindowsApps,
+    Install, Locale, Staging, StagingKind, SwapPlan, Target as OobeTarget, UserAccount, WindowsApps,
 };
 use crate::provenance::Provenance;
 
@@ -34,7 +33,6 @@ pub(super) fn payload_context(user: Option<UserAccount>, auto_install: bool) -> 
             auto_install,
             allocated_bytes: disk.bytes(gap.sectors),
             swap: SwapPlan::None,
-            root_filesystem: RootFilesystem::Ext4,
             keep_windows: true,
             ai_features: crate::oobe::AiFeatures::Disabled,
             windows_apps: crate::oobe::WindowsApps::Disabled,

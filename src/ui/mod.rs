@@ -43,9 +43,9 @@ mod form;
 mod layout;
 mod page;
 mod pages;
-mod palette;
+pub mod palette;
 mod progress;
-mod root;
+pub mod root;
 mod target;
 mod wizard;
 
@@ -70,12 +70,16 @@ const MIN_WINDOW_SIZE: (u32, u32) = (1024, 640);
 
 /// Run the wizard until the user restarts or the window closes.
 pub fn run(startup: Result<Context, Blocker>, mode: Mode) -> Result<(), RunError> {
-    let config = AppConfig::new("CrownOS Installer")
+    crownui::run(root::root(startup, mode), app_config())
+}
+
+/// The window the wizard runs in.
+pub fn app_config() -> AppConfig {
+    AppConfig::new("CrownOS Installer")
         .app_id("crownos-installer")
         .size(WINDOW_SIZE.0, WINDOW_SIZE.1)
         .min_size(MIN_WINDOW_SIZE.0, MIN_WINDOW_SIZE.1)
-        .font(inter_font().to_vec(), Some(INTER_FAMILY));
-    crownui::run(root::root(startup, mode), config)
+        .font(inter_font().to_vec(), Some(INTER_FAMILY))
 }
 
 #[cfg(test)]

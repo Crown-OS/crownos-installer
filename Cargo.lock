@@ -373,6 +373,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "capture"
+version = "0.2.0"
+dependencies = [
+ "crowntest",
+ "geometry",
+ "graphics",
+ "impeller",
+ "inspect",
+ "libc",
+ "runtime",
+ "semantics",
+ "serde",
+ "serde_json",
+ "taffy-layout",
+ "thiserror",
+ "view",
+ "windowing",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -447,6 +467,7 @@ name = "crownos-installer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "capture",
  "crowntest",
  "crownui",
  "impeller",
