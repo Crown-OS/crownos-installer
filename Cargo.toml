@@ -1,3 +1,22 @@
+[workspace]
+members = ["crates/setup-tasks", "crates/crownos-setup"]
+default-members = [".", "crates/setup-tasks", "crates/crownos-setup"]
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crownos-config = { path = "../crownos-config", default-features = false }
+crownos-setup-tasks = { path = "crates/setup-tasks" }
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "fmt",
+  "std",
+] }
+
 [package]
 name = "crownos-installer"
 version = "0.1.0"
@@ -8,9 +27,9 @@ name = "crownos-installer"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1"
+anyhow = { workspace = true }
 # The setup choices file the installed system reads, `/etc/crownos/setup.ron`.
-crownos-config = { path = "../crownos-config", default-features = false }
+crownos-config = { workspace = true }
 # The kiosk UI, built from the CrownOS kit so the first thing the user sees
 # looks like the desktop it is about to install. `static` links Impeller into
 # the binary, so the live image needs no rpath to the SDK the build downloads.
@@ -27,9 +46,9 @@ crownui = { path = "../crownui/crownui", default-features = false, features = [
 # `src/network`.
 nmrs = "3.5"
 png = "0.18"
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true }
 # `oobe.json` is JSON rather than RON. See `src/oobe.rs` for why.
-serde_json = "1"
+serde_json = { workspace = true }
 # CrownUI runs `cx.spawn` futures on tokio; the workers need its channels,
 # timers, `select!` and the blocking pool the install runs on.
 tokio = { version = "1", default-features = false, features = [
