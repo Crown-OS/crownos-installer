@@ -1,7 +1,7 @@
 //! The handoff payload: everything the Linux side needs to finish the install.
 //!
 //! This is the contract between two programs that never run at the same time.
-//! `windows-migration-assistant` writes one of these to the staging medium as
+//! `migration-assistant` writes one of these to the staging medium as
 //! `oobe.json`; `crownos-installer`, booted from the staged live environment on
 //! the next restart, reads it and does the actual installation.
 //!
@@ -12,9 +12,9 @@
 //!
 //! # This file is duplicated on purpose
 //!
-//! An identical copy of this module lives in
-//! `windows-migration-assistant/src/oobe.rs`, and that is the copy that writes the
-//! file. The alternative — a shared crate — would put a dependency edge between a
+//! `migration-assistant/crates/oobe/src/lib.rs` carries the same declarations
+//! and the same golden test, and that is the copy that writes the file. The
+//! alternative — a shared crate — would put a dependency edge between a
 //! Windows-only binary and a Linux-only one, and drag one platform's build graph
 //! onto the other for the sake of ~200 lines of `serde` structs. Instead both
 //! copies carry the same [`SCHEMA_VERSION`] and the same golden-JSON test, so a
@@ -131,6 +131,14 @@ pub struct Install {
     /// Absent in payloads written before the option existed.
     #[serde(default, skip_serializing_if = "WindowsApps::is_disabled")]
     pub windows_apps: WindowsApps,
+    /// The web browser to install and make the default. Absent in payloads
+    /// written before the choice existed, which means Chromium.
+    #[serde(default, skip_serializing_if = "Browser::is_default")]
+    pub browser: Browser,
+    /// The developer tools to install after the first boot. Absent when none
+    /// were chosen.
+    #[serde(default, skip_serializing_if = "DeveloperTools::is_none")]
+    pub developer_tools: DeveloperTools,
 }
 
 /// Whether the hardware-accelerated AI stack is installed.
@@ -160,6 +168,43 @@ pub enum WindowsApps {
 impl WindowsApps {
     fn is_disabled(&self) -> bool {
         *self == Self::Disabled
+    }
+}
+
+/// The web browser the installed system uses. Only Chromium is on the live
+/// image; the others download after the first boot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Browser {
+    /// Written as `brave`.
+    Brave,
+    /// Written as `chrome`.
+    Chrome,
+    /// Written as `chromium`.
+    #[default]
+    Chromium,
+    /// Written as `firefox`.
+    Firefox,
+}
+
+impl Browser {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The developer tools the installed system downloads after the first boot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeveloperTools {
+    pub claude_code: bool,
+    pub codex: bool,
+    pub cursor: bool,
+}
+
+impl DeveloperTools {
+    fn is_none(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -368,6 +413,8 @@ mod tests {
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
                 windows_apps: crate::oobe::WindowsApps::Disabled,
+                browser: Browser::Chromium,
+                developer_tools: DeveloperTools::default(),
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -428,6 +475,28 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_and_developer_tools_round_trip() {
+        let mut original = sample();
+        original.install.browser = Browser::Firefox;
+        original.install.developer_tools.codex = true;
+        let json = original.to_json().expect("serialize");
+        assert!(json.contains(r#""browser": "firefox""#), "{json}");
+        assert!(json.contains(r#""developer_tools""#), "{json}");
+        assert_eq!(Oobe::from_json(&json).expect("deserialize"), original);
+        for (browser, wire_name) in [
+            (Browser::Brave, r#""brave""#),
+            (Browser::Chrome, r#""chrome""#),
+            (Browser::Chromium, r#""chromium""#),
+            (Browser::Firefox, r#""firefox""#),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&browser).expect("serialize"),
+                wire_name
+            );
+        }
+    }
+
+    #[test]
     fn a_payload_with_no_user_round_trips() {
         let mut original = sample();
         original.user = None;
@@ -448,11 +517,11 @@ mod tests {
     }
 
     /// The golden shape. This is the cross-repo contract: the identical test in
-    /// `windows-migration-assistant` pins this exact string, so a field renamed on
+    /// `migration-assistant` pins this exact string, so a field renamed on
     /// one side without the other fails there too.
     ///
     /// If this test fails because you meant to change the schema, update the
-    /// literal here *and* in `windows-migration-assistant/src/oobe.rs`, and bump
+    /// literal here *and* in `migration-assistant/crates/oobe/src/lib.rs`, and bump
     /// [`SCHEMA_VERSION`] if the change is not backward compatible.
     #[test]
     fn the_json_shape_is_pinned() {

@@ -7,7 +7,7 @@ use crate::engine::exec::{Event, Mode, Secrets};
 use crate::engine::plan::{IsoInput, Plan, PlanInput, Refusal, plan, plan_iso};
 use crate::engine::probe::Disk;
 use crate::network::Network;
-use crate::oobe::{AiFeatures, WindowsApps};
+use crate::oobe::{AiFeatures, Browser, DeveloperTools, WindowsApps};
 use crate::provenance::Provenance;
 
 use super::editor::{PartitionAction, Row};
@@ -39,6 +39,10 @@ pub struct Wizard {
     pub ai_features: AiFeatures,
     /// Whether the new system sets up Wine on its first boot that is online.
     pub windows_apps: WindowsApps,
+    /// The web browser the new system uses.
+    pub browser: Browser,
+    /// The developer tools the new system downloads after its first boot.
+    pub developer_tools: DeveloperTools,
     /// The plan as of the last time something that matters changed. Recomputed
     /// rather than derived per frame, so the confirmation page is showing the
     /// same value the install will run.
@@ -69,13 +73,16 @@ impl Wizard {
             Some(oobe) => Target::from_payload(oobe, &context.snapshot),
             None => Target::best_for(&context.snapshot),
         };
-        let ai_features = context
-            .oobe()
-            .map(|oobe| oobe.install.ai_features)
+        let install = context.oobe().map(|oobe| &oobe.install);
+        let ai_features = install
+            .map(|install| install.ai_features)
             .unwrap_or_default();
-        let windows_apps = context
-            .oobe()
-            .map(|oobe| oobe.install.windows_apps)
+        let windows_apps = install
+            .map(|install| install.windows_apps)
+            .unwrap_or_default();
+        let browser = install.map(|install| install.browser).unwrap_or_default();
+        let developer_tools = install
+            .map(|install| install.developer_tools)
             .unwrap_or_default();
         let mut wizard = Self {
             page,
@@ -83,6 +90,8 @@ impl Wizard {
             target,
             ai_features,
             windows_apps,
+            browser,
+            developer_tools,
             ..Self::blocked_on(Ok(context), mode)
         };
         wizard.restage_plan();
@@ -118,6 +127,8 @@ impl Wizard {
             editor_return: None,
             ai_features: AiFeatures::default(),
             windows_apps: WindowsApps::default(),
+            browser: Browser::default(),
+            developer_tools: DeveloperTools::default(),
             staged: None,
             progress: InstallProgress::default(),
             mode,
@@ -263,6 +274,8 @@ impl Wizard {
                 let mut oobe = oobe.clone();
                 oobe.install.ai_features = self.ai_features;
                 oobe.install.windows_apps = self.windows_apps;
+                oobe.install.browser = self.browser;
+                oobe.install.developer_tools = self.developer_tools;
                 plan(&PlanInput {
                     oobe: &oobe,
                     snapshot: &context.snapshot,
@@ -281,6 +294,16 @@ impl Wizard {
 
     pub fn set_windows_apps(&mut self, windows_apps: WindowsApps) {
         self.windows_apps = windows_apps;
+        self.restage_plan();
+    }
+
+    pub fn set_browser(&mut self, browser: Browser) {
+        self.browser = browser;
+        self.restage_plan();
+    }
+
+    pub fn set_developer_tools(&mut self, developer_tools: DeveloperTools) {
+        self.developer_tools = developer_tools;
         self.restage_plan();
     }
 
@@ -308,6 +331,8 @@ impl Wizard {
             edits: self.editor.ops.clone(),
             ai_features: self.ai_features,
             windows_apps: self.windows_apps,
+            browser: self.browser,
+            developer_tools: self.developer_tools,
         })
     }
 

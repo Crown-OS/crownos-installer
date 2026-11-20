@@ -45,6 +45,7 @@ use crate::util::{manifest, meminfo};
 
 use super::ai::CPU_META;
 use super::base::{MANIFEST_LIVE_PATH, OFFLINE_PACMAN_CONF, REPO_KEY_LIVE_PATH};
+use super::setup;
 
 /// Where archiso mounts the medium it booted from.
 ///
@@ -192,6 +193,14 @@ pub struct SystemSnapshot {
 }
 
 impl SystemSnapshot {
+    /// Whether the live image's manifest lists the `crownos-setup` runner. An
+    /// image built without it cannot offer the browser and developer tools.
+    pub fn setup_shipped(&self) -> bool {
+        self.published_packages
+            .as_deref()
+            .is_some_and(|packages| packages.iter().any(|name| name == setup::PACKAGE))
+    }
+
     /// Find the partition with this PARTUUID, and the disk it belongs to.
     ///
     /// This is the only supported way to locate anything. A device name is a
@@ -1056,7 +1065,7 @@ pub(crate) mod fixture {
 
     /// The live image's manifest: its packages are what an install pacstraps.
     pub(crate) const FIXTURE_MANIFEST: &str = "version = \"0.1.12\"\n\
-        packages = [\"crownbar\", \"crowndock\", \"crownos-appstore\"]\n\
+        packages = [\"crownbar\", \"crowndock\", \"crownos-appstore\", \"crownos-setup\"]\n\
         [[package]]\nname = \"crownbar\"\nversion = \"0.3.0-1\"\n";
 
     /// A [`FakeSystem`] wired up with the fixtures above.

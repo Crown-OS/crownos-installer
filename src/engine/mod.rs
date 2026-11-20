@@ -15,6 +15,8 @@
 //! * [`base`] is the Arch Linux base under the desktop: how it and the CrownOS
 //!   desktop get onto the disk, locales, the repositories. [`btrfs`] lays out
 //!   the root filesystem and [`boot`] the boot loader and recovery entry.
+//!   [`setup`] records the browser and developer tools that the installed
+//!   system downloads after the first boot.
 //! * [`exec`] walks a plan and runs it, or — in [`exec::Mode::DryRun`] — prints
 //!   exactly what it would have run.
 //!
@@ -40,3 +42,4 @@ pub mod graphics;
 pub mod plan;
 pub mod probe;
 pub mod repos;
+pub mod setup;

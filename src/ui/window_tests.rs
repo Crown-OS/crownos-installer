@@ -523,6 +523,58 @@ fn typing_the_missing_username_moves_on_to_the_apps_page() {
     assert!(showing(&mut app, "Apps from other systems"));
 }
 
+// ---- Apps ----
+
+#[test]
+fn the_browser_choice_and_the_tool_switches_are_reachable() {
+    let mut wizard = on(iso_wizard(), Page::Apps);
+    sign_in(&mut wizard);
+    let mut app = window(wizard);
+    let firefox = role(Role::RadioButton).name("Firefox");
+    let codex = role(Role::Switch).name("Codex");
+    assert_eq!(app.find(firefox.clone()).states.checked, Some(false));
+    assert_eq!(app.find(codex.clone()).states.checked, Some(false));
+
+    app.click(firefox.clone()).settle();
+    app.click(codex.clone()).settle();
+    press(&mut app, "Next");
+    assert!(app.exists(role(Role::ListItem).name("Saving the setup choices")));
+    press(&mut app, "Back");
+
+    assert_eq!(app.find(firefox).states.checked, Some(true));
+    assert_eq!(app.find(codex).states.checked, Some(true));
+    for name in ["Windows apps", "Claude Code", "Cursor"] {
+        assert_eq!(
+            app.find(role(Role::Switch).name(name)).states.checked,
+            Some(false),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn an_image_without_the_setup_runner_offers_only_windows_apps() {
+    let mut context = iso_context();
+    context.snapshot.published_packages = Some(vec!["crownbar".to_owned()]);
+    let mut app = window(on(Wizard::ready(context, Mode::Commit), Page::Apps));
+    assert!(app.exists(role(Role::Switch).name("Windows apps")));
+    assert!(!app.exists(role(Role::RadioButton).name("Firefox")));
+    assert!(!app.exists(role(Role::Switch).name("Codex")));
+}
+
+#[test]
+fn the_apps_switches_sit_above_the_actions_at_the_smallest_window() {
+    let mut app = window_sized(on(iso_wizard(), Page::Apps), MIN_WINDOW_SIZE);
+    let cursor = app.find(role(Role::Switch).name("Cursor")).bounds;
+    let next = app.find(role(Role::Button).name("Next")).bounds;
+    assert!(
+        cursor.origin.y + cursor.size.height < next.origin.y,
+        "the Cursor switch ends at {}, the Next button starts at {}",
+        cursor.origin.y + cursor.size.height,
+        next.origin.y
+    );
+}
+
 #[test]
 fn submitting_an_incomplete_form_explains_what_is_missing() {
     let mut app = window(on(iso_wizard(), Page::Account));

@@ -4,8 +4,8 @@
 use crate::engine::plan::NewIds;
 use crate::engine::probe::{Disk, Mount, Partition, SystemSnapshot};
 use crate::oobe::{
-    AiFeatures, Install, Locale, Oobe, SCHEMA_VERSION, Staging, StagingKind, SwapPlan, Target,
-    WindowsApps,
+    AiFeatures, Browser, DeveloperTools, Install, Locale, Oobe, SCHEMA_VERSION, Staging,
+    StagingKind, SwapPlan, Target, WindowsApps,
 };
 use crate::provenance::Provenance;
 use crate::ui::Context;
@@ -332,6 +332,8 @@ pub fn windows_context_shifted(auto_install: bool, shift: u64) -> Context {
             keep_windows: true,
             ai_features: AiFeatures::Disabled,
             windows_apps: WindowsApps::Disabled,
+            browser: Browser::Chromium,
+            developer_tools: DeveloperTools::default(),
         },
         target: Target {
             esp_partuuid: ESP_PARTUUID.to_owned(),

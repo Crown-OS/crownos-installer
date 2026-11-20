@@ -59,7 +59,12 @@
 
 use std::fmt;
 
-use crate::oobe::{AiFeatures, Locale, Oobe, StagingKind, SwapPlan, UserAccount, WindowsApps};
+use crownos_config::system::SetupConfig;
+
+use crate::oobe::{
+    AiFeatures, Browser, DeveloperTools, Locale, Oobe, StagingKind, SwapPlan, UserAccount,
+    WindowsApps,
+};
 use crate::util::cpuinfo::Microarch;
 use crate::util::manifest;
 
@@ -69,6 +74,7 @@ use super::boot::EspOrigin;
 use super::btrfs;
 use super::graphics::{self, GraphicsPlan};
 use super::probe::{Disk, Gap, Partition, SystemSnapshot};
+use super::setup;
 
 // --- MARK: Constants ---
 
@@ -682,6 +688,9 @@ pub enum Step {
     /// Record the AI stack chosen for this machine and fetch the parts of it
     /// the live image could not bundle.
     ConfigureAiAcceleration { root: String, plan: AiPlan },
+    /// Record the browser and developer tools for the `crownos-setup` runner,
+    /// which downloads them after the first boot.
+    ConfigureSetup { root: String, config: SetupConfig },
     /// Set up the NVIDIA driver and fetch the parts of the graphics stack the
     /// live image could not bundle.
     ConfigureGraphics { root: String, plan: GraphicsPlan },
@@ -821,6 +830,7 @@ impl Step {
             Self::ConfigureRepositories { .. } => "Configuring package repositories".to_owned(),
             Self::AddCrownosRepository { .. } => "Adding the CrownOS repository".to_owned(),
             Self::ConfigureAiAcceleration { .. } => "Setting up AI acceleration".to_owned(),
+            Self::ConfigureSetup { .. } => "Saving the setup choices".to_owned(),
             Self::ConfigureGraphics { .. } => "Setting up graphics drivers".to_owned(),
             Self::GenerateFstab { .. } => "Writing the filesystem table".to_owned(),
             Self::CreateSwapFile { .. } => "Creating the swap file".to_owned(),
@@ -1530,6 +1540,7 @@ fn system_steps(
     let ai_plan = (oobe.install.ai_features == AiFeatures::Enabled && snapshot.ai_bundled)
         .then(|| ai::ai_plan(&snapshot.accelerators));
     let graphics_plan = graphics::graphics_plan(&snapshot.accelerators);
+    let setup_shipped = snapshot.setup_shipped();
     let esp_origin = if layout.boot.is_some() {
         EspOrigin::Created
     } else {
@@ -1633,8 +1644,15 @@ fn system_steps(
             plan,
         });
     }
+    if setup_shipped {
+        steps.push(Step::ConfigureSetup {
+            root: root.clone(),
+            config: setup::setup_config(&oobe.install),
+        });
+    }
     let windows_apps =
         (oobe.install.windows_apps == WindowsApps::Enabled).then_some(base::WINDOWS_APPS_SERVICE);
+    let setup_runner = setup_shipped.then_some(setup::SERVICE);
     // After the best-effort online transactions above: a `[crownos]` listed
     // before its server resolves would make each of them fail at the
     // database sync.
@@ -1652,6 +1670,7 @@ fn system_steps(
                 .copied()
                 .chain(switcheroo)
                 .chain(windows_apps)
+                .chain(setup_runner)
                 .map(str::to_owned)
                 .collect(),
         },
@@ -1782,6 +1801,8 @@ pub struct IsoInput<'a> {
     pub edits: Vec<super::disks::DiskOp>,
     pub ai_features: AiFeatures,
     pub windows_apps: WindowsApps,
+    pub browser: Browser,
+    pub developer_tools: DeveloperTools,
 }
 
 /// Build an install plan from the user's own choices, with no handoff payload.
@@ -2008,6 +2029,8 @@ fn synthesize_oobe(
             keep_windows: true,
             ai_features: input.ai_features,
             windows_apps: input.windows_apps,
+            browser: input.browser,
+            developer_tools: input.developer_tools,
         },
         target: crate::oobe::Target {
             esp_partuuid: esp.partuuid.clone(),
@@ -2099,6 +2122,8 @@ mod tests {
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
                 windows_apps: crate::oobe::WindowsApps::Disabled,
+                browser: crate::oobe::Browser::Chromium,
+                developer_tools: crate::oobe::DeveloperTools::default(),
             },
             target: Target {
                 esp_partuuid: ESP_PARTUUID.to_owned(),
@@ -2940,6 +2965,8 @@ mod tests {
             accelerators: Vec::new(),
             ai_features: AiFeatures::Disabled,
             windows_apps: WindowsApps::Disabled,
+            browser: Browser::default(),
+            developer_tools: DeveloperTools::default(),
         };
         edit(&mut target);
         snapshot.accelerators = target.accelerators;
@@ -2958,6 +2985,8 @@ mod tests {
             edits: target.edits,
             ai_features: target.ai_features,
             windows_apps: target.windows_apps,
+            browser: target.browser,
+            developer_tools: target.developer_tools,
         })
     }
 
@@ -2976,6 +3005,8 @@ mod tests {
         accelerators: Vec<crate::util::pci::Accelerator>,
         ai_features: AiFeatures,
         windows_apps: WindowsApps,
+        browser: Browser,
+        developer_tools: DeveloperTools,
     }
 
     #[test]
@@ -3182,6 +3213,101 @@ mod tests {
         ));
     }
 
+    fn setup_config_of(plan: &Plan) -> Option<SetupConfig> {
+        plan.steps.iter().find_map(|step| match step {
+            Step::ConfigureSetup { config, .. } => Some(*config),
+            _ => None,
+        })
+    }
+
+    fn enabled_units(plan: &Plan) -> Vec<String> {
+        plan.steps
+            .iter()
+            .find_map(|step| match step {
+                Step::EnableServices { units, .. } => Some(units.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn pacstrapped(plan: &Plan) -> Vec<String> {
+        plan.steps
+            .iter()
+            .find_map(|step| match step {
+                Step::InstallBaseSystem { packages, .. } => Some(packages.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_setup_choices_are_saved_and_the_runner_enabled() {
+        let plan = iso_plan_with(|target| {
+            target.browser = Browser::Firefox;
+            target.developer_tools.codex = true;
+        })
+        .expect("a plan");
+        let config = setup_config_of(&plan).expect("the choices are saved");
+        assert_eq!(config.browser, crownos_config::system::Browser::Firefox);
+        assert!(config.developer_tools.codex);
+        assert!(
+            enabled_units(&plan)
+                .iter()
+                .any(|unit| unit == setup::SERVICE)
+        );
+        let log = commands(&plan);
+        assert!(log.contains("/mnt/etc/crownos/setup.ron"), "{log}");
+        assert!(log.contains("browser: Firefox"), "{log}");
+    }
+
+    /// An image built before the runner was pinned has no unit to enable.
+    #[test]
+    fn without_the_runner_in_the_manifest_nothing_is_saved() {
+        let plan = iso_plan_with(|target| {
+            target.published_packages = Some(vec!["crownbar".to_owned()]);
+            target.browser = Browser::Firefox;
+        })
+        .expect("a plan");
+        assert_eq!(setup_config_of(&plan), None);
+        assert!(
+            !enabled_units(&plan)
+                .iter()
+                .any(|unit| unit == setup::SERVICE)
+        );
+    }
+
+    #[test]
+    fn a_browser_that_is_not_bundled_is_not_pacstrapped() {
+        for browser in [Browser::Brave, Browser::Chrome, Browser::Firefox] {
+            let plan = iso_plan_with(|target| target.browser = browser).expect("a plan");
+            let packages = pacstrapped(&plan);
+            for absent in ["brave-bin", "google-chrome", "firefox"] {
+                assert!(
+                    !packages.iter().any(|package| package == absent),
+                    "{browser:?}: {absent}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn developer_tools_are_recorded_not_installed() {
+        let log = commands(
+            &iso_plan_with(|target| {
+                target.developer_tools = DeveloperTools {
+                    claude_code: true,
+                    codex: true,
+                    cursor: true,
+                };
+            })
+            .expect("a plan"),
+        );
+        assert!(log.contains("claude_code: true"), "{log}");
+        for package in ["claude-code", "openai-codex", "cursor-bin"] {
+            assert!(!log.contains(package), "`{package}` in {log}");
+        }
+    }
+
     /// The baseline: no payload, no Windows partition designated, and a boot
     /// partition followed by a btrfs root laid out in the free space the user
     /// picked.
@@ -3290,6 +3416,8 @@ mod tests {
             edits: Vec::new(),
             ai_features: AiFeatures::Disabled,
             windows_apps: WindowsApps::Disabled,
+            browser: Browser::default(),
+            developer_tools: DeveloperTools::default(),
         })
         .expect("no ESP needed");
         assert!(plan.boot_partition.is_some());
@@ -3325,6 +3453,8 @@ mod tests {
             edits: Vec::new(),
             ai_features: AiFeatures::Disabled,
             windows_apps: WindowsApps::Disabled,
+            browser: Browser::default(),
+            developer_tools: DeveloperTools::default(),
         })
         .expect_err("MBR is refused");
         assert!(matches!(refusal, Refusal::NotGpt { .. }), "{refusal:?}");
@@ -3361,6 +3491,8 @@ mod tests {
             edits,
             ai_features: AiFeatures::Disabled,
             windows_apps: WindowsApps::Disabled,
+            browser: Browser::default(),
+            developer_tools: DeveloperTools::default(),
         };
 
         let refusal = plan_iso(&input(Vec::new())).expect_err("no table, no install");
@@ -3401,6 +3533,8 @@ mod tests {
             edits: Vec::new(),
             ai_features: AiFeatures::Disabled,
             windows_apps: WindowsApps::Disabled,
+            browser: Browser::default(),
+            developer_tools: DeveloperTools::default(),
         })
         .expect_err("a username with a space in it is refused");
         assert!(
@@ -3613,9 +3747,17 @@ mod tests {
         })
         .expect("a plan");
         let recovery = position_of(&plan, |s| matches!(s, Step::PrepareRecovery { .. }));
+        let setup_step = position_of(&plan, |s| matches!(s, Step::ConfigureSetup { .. }));
+        assert!(
+            position_of(&plan, |s| matches!(s, Step::ConfigureAiAcceleration { .. })) < setup_step
+        );
+        assert!(
+            setup_step < position_of(&plan, |s| matches!(s, Step::AddCrownosRepository { .. }))
+        );
         for earlier in [
             position_of(&plan, |s| matches!(s, Step::ConfigureGraphics { .. })),
             position_of(&plan, |s| matches!(s, Step::ConfigureAiAcceleration { .. })),
+            setup_step,
             position_of(&plan, |s| matches!(s, Step::AddCrownosRepository { .. })),
             position_of(&plan, |s| matches!(s, Step::EnableServices { .. })),
         ] {

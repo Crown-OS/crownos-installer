@@ -44,6 +44,7 @@ use super::btrfs;
 use super::disks::{self, Filesystem};
 use super::plan::{BOOT_FSLABEL, Plan, Role, Step};
 use super::probe::System;
+use super::setup;
 
 // --- MARK: Secrets ---
 
@@ -514,6 +515,8 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
 
         Step::ConfigureAiAcceleration { root, plan } => plan.commands(root),
 
+        Step::ConfigureSetup { root, config } => setup::commands(root, config),
+
         Step::ConfigureGraphics { root, plan } => plan.commands(root),
 
         Step::ConfigureRepositories { root, microarch } => {
@@ -738,6 +741,8 @@ mod tests {
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
                 windows_apps: crate::oobe::WindowsApps::Disabled,
+                browser: crate::oobe::Browser::Chromium,
+                developer_tools: crate::oobe::DeveloperTools::default(),
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),
@@ -1151,6 +1156,8 @@ mod tests {
                 keep_windows: true,
                 ai_features: crate::oobe::AiFeatures::Disabled,
                 windows_apps: crate::oobe::WindowsApps::Disabled,
+                browser: crate::oobe::Browser::Chromium,
+                developer_tools: crate::oobe::DeveloperTools::default(),
             },
             target: Target {
                 esp_partuuid: "0fc63daf-8483-4772-8e79-3d69d8477de4".to_owned(),

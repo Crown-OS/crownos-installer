@@ -242,10 +242,12 @@ fn rehearse_without_live_image(
         return;
     }
     snapshot.crownos_repo_key = true;
-    snapshot.published_packages.get_or_insert_with(Vec::new);
+    snapshot
+        .published_packages
+        .get_or_insert_with(|| vec![engine::setup::PACKAGE.to_owned()]);
     snapshot.published_version.get_or_insert_with(String::new);
     notes.push(
-        "rehearsal: pretending the live image ships the repository key and manifest".to_owned(),
+        "rehearsal: pretending the live image ships the repository key, the manifest and the crownos-setup runner".to_owned(),
     );
 }
 
@@ -389,6 +391,8 @@ fn print_plan(startup: Result<ui::Context, ui::Blocker>) -> ExitCode {
                 edits: Vec::new(),
                 ai_features: oobe::AiFeatures::Enabled,
                 windows_apps: oobe::WindowsApps::Enabled,
+                browser: oobe::Browser::default(),
+                developer_tools: oobe::DeveloperTools::default(),
             })
         }
     };
