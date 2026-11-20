@@ -1,5 +1,6 @@
 //! Runs commands under coreutils `timeout`, so that a command that hangs ends
-//! and its task fails and counts as an attempt.
+//! and its task fails and counts as an attempt. A command that a signal or
+//! the kill stopped also counts as timed out.
 
 use std::path::Path;
 use std::time::Duration;
@@ -15,8 +16,14 @@ pub const BUILD_TIME_LIMIT: Duration = Duration::from_secs(3 * 60 * 60);
 pub const GIT_TIME_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// The exit status of `timeout` when the limit stopped the command.
 pub const TIMED_OUT_STATUS: i32 = 124;
+/// The exit status of `timeout` when its kill stopped the command.
+pub const KILLED_STATUS: i32 = 137;
 
-const TIMEOUT_OPTIONS: [&str; 2] = ["--signal=INT", "--kill-after=1m"];
+/// `timeout` arms its kill timer on any signal that it forwards, also on the
+/// SIGINT of a service stop. The kill must not come before the
+/// `TimeoutStopSec=15min` of `crownos-setup.service`, or pacman can leave its
+/// lock file.
+const TIMEOUT_OPTIONS: [&str; 2] = ["--signal=INT", "--kill-after=15m"];
 
 pub fn run(
     system: &dyn System,
@@ -76,7 +83,7 @@ mod tests {
             timeout_arguments("1800", "git", &["pull", "--ff-only"]),
             [
                 "--signal=INT",
-                "--kill-after=1m",
+                "--kill-after=15m",
                 "1800",
                 "git",
                 "pull",
@@ -108,5 +115,28 @@ mod tests {
             .expect_err("timed out");
         assert_eq!(error.to_string(), "`npm install` timed out after 2 hours");
         assert_eq!(system.commands(), ["npm install"]);
+    }
+
+    #[test]
+    fn a_killed_command_is_reported_as_timed_out() {
+        for status in [None, Some(KILLED_STATUS)] {
+            let output = Output {
+                status,
+                ..Output::default()
+            }
+            .with_time_limit(GIT_TIME_LIMIT);
+            assert!(matches!(
+                output.check("git clone"),
+                Err(TaskError::TimedOut { .. })
+            ));
+        }
+        let without_limit = Output {
+            status: Some(KILLED_STATUS),
+            ..Output::default()
+        };
+        assert!(matches!(
+            without_limit.check("git clone"),
+            Err(TaskError::Command { .. })
+        ));
     }
 }

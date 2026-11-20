@@ -537,3 +537,37 @@ fn a_pass_without_network_tasks_does_not_probe_the_network() {
     pass(&system, SetupConfig::default(), false);
     assert_eq!(system.network_probes(), 0);
 }
+
+#[test]
+fn two_network_tasks_offline_probe_the_network_one_time() {
+    let system = with_playwright_ready(first_boot());
+    let summary = pass(&system, config(Browser::Brave, claude_code_only()), false);
+    assert_eq!(
+        summary.waiting_for_network,
+        [SetupTask::Browser, SetupTask::DeveloperTools]
+    );
+    assert_eq!(system.network_probes(), 1);
+}
+
+#[test]
+fn an_offline_failure_keeps_the_later_tasks_pending_without_a_probe() {
+    let system = with_playwright_ready(first_boot()).with_failure(
+        "pacman -Syu --needed --noconfirm -- brave-bin",
+        "error: failed retrieving file",
+    );
+    let context = Context::new(config(Browser::Brave, claude_code_only()), &system);
+    system.set_connectivity(&[true, false, true]);
+    let summary = run_pass(
+        &context,
+        &StateStore::new(&system, SETUP_STATE_DIR),
+        GENERATION,
+    )
+    .expect("pass runs");
+
+    assert_eq!(
+        summary.waiting_for_network,
+        [SetupTask::Browser, SetupTask::DeveloperTools]
+    );
+    assert_eq!(system.network_probes(), 2);
+    assert!(!system.is_installed("claude-code"));
+}
