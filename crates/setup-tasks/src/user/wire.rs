@@ -94,7 +94,13 @@ pub fn wire(
             if let Some(links) =
                 report.record_failure(folder, skills::link(system, &system_skills, folder))
             {
-                report.linked.extend(links);
+                report.linked.extend(links.linked);
+                report.skipped.extend(
+                    links
+                        .skipped
+                        .into_iter()
+                        .map(|link| (link, SkipReason::SymbolicLink)),
+                );
             }
         }
     }

@@ -37,15 +37,24 @@ pub fn system_skills(system: &dyn System) -> Result<Vec<PathBuf>, TaskError> {
     Ok(skills)
 }
 
-/// Links each skill into `folder`, like `ln -sfn`. An entry that is not a
-/// symbolic link stays. A link that another run of `crownos-setup user` made
-/// at the same time counts as done. Returns the links that this run made.
+/// The links that one [`link`] call made, and the links of the user that it
+/// left as they are.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SkillLinks {
+    pub linked: Vec<PathBuf>,
+    pub skipped: Vec<PathBuf>,
+}
+
+/// Links each skill into `folder`. A link into [`SKILLS_DIRECTORY`] that
+/// points at another skill is replaced. An entry that is not a symbolic link
+/// stays, and a link to another place stays and is reported. A link that
+/// another run of `crownos-setup user` made at the same time counts as done.
 pub fn link(
     system: &dyn System,
     skills: &[PathBuf],
     folder: &Path,
-) -> Result<Vec<PathBuf>, TaskError> {
-    let mut links = Vec::new();
+) -> Result<SkillLinks, TaskError> {
+    let mut links = SkillLinks::default();
     if skills.is_empty() {
         return Ok(links);
     }
@@ -57,12 +66,16 @@ pub fn link(
         let link = folder.join(skill_name);
         match system.read_link(&link) {
             Some(target) if target == *skill => continue,
-            Some(_) => system.remove_file(&link)?,
+            Some(target) if target.starts_with(SKILLS_DIRECTORY) => system.remove_file(&link)?,
+            Some(_) => {
+                links.skipped.push(link);
+                continue;
+            }
             None if system.exists(&link) => continue,
             None => {}
         }
         match system.symlink(skill, &link) {
-            Ok(()) => links.push(link),
+            Ok(()) => links.linked.push(link),
             Err(error)
                 if error.is_already_exists() && system.read_link(&link).as_ref() == Some(skill) => {
             }
@@ -94,7 +107,7 @@ mod tests {
 
     fn link_all(system: &FakeSystem) -> Result<Vec<PathBuf>, TaskError> {
         let skills = system_skills(system)?;
-        link(system, &skills, Path::new(FOLDER))
+        link(system, &skills, Path::new(FOLDER)).map(|links| links.linked)
     }
 
     #[test]
@@ -141,13 +154,37 @@ mod tests {
         let system = system_with_skills()
             .with_directory(folder)
             .with_directory(folder.join("computer-use"))
-            .with_link(folder.join("settings"), "/opt/old/settings");
+            .with_link(
+                folder.join("settings"),
+                "/usr/share/crownos/skills/old-settings",
+            );
         assert_eq!(link_all(&system).expect("links"), [folder.join("settings")]);
         assert!(system.is_directory(&folder.join("computer-use")));
         assert_eq!(system.read_link(&folder.join("computer-use")), None);
         assert_eq!(
             system.read_link(&folder.join("settings")),
             Some(PathBuf::from(OTHER_SKILL))
+        );
+    }
+
+    #[test]
+    fn a_link_of_the_user_to_another_place_stays_and_is_reported() {
+        let folder = Path::new(FOLDER);
+        let system = system_with_skills()
+            .with_directory(folder)
+            .with_directory("/home/ada/my-skills/settings")
+            .with_link(folder.join("settings"), "/home/ada/my-skills/settings");
+        let skills = system_skills(&system).expect("lists");
+        assert_eq!(
+            link(&system, &skills, folder).expect("links"),
+            SkillLinks {
+                linked: vec![folder.join("computer-use")],
+                skipped: vec![folder.join("settings")],
+            }
+        );
+        assert_eq!(
+            system.read_link(&folder.join("settings")),
+            Some(PathBuf::from("/home/ada/my-skills/settings"))
         );
     }
 

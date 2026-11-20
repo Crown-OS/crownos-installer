@@ -46,11 +46,8 @@ fn with_playwright_ready(system: FakeSystem) -> FakeSystem {
 }
 
 fn pass(system: &FakeSystem, config: SetupConfig, online: bool) -> PassSummary {
-    let context = Context {
-        config,
-        system,
-        online,
-    };
+    system.set_connectivity(&[online]);
+    let context = Context::new(config, system);
     run_pass(
         &context,
         &StateStore::new(system, SETUP_STATE_DIR),
@@ -77,7 +74,7 @@ fn only_queries_ran(system: &FakeSystem) -> bool {
     system
         .journal()
         .iter()
-        .all(|entry| entry.starts_with("run pacman -Qq -- "))
+        .all(|entry| entry.starts_with("run pacman -Qq -- ") || entry.starts_with("connect "))
 }
 
 #[test]
@@ -318,7 +315,11 @@ fn changes(system: &FakeSystem) -> Vec<String> {
     system
         .journal()
         .into_iter()
-        .filter(|entry| !entry.starts_with("run pacman -Qq") && !is_state_entry(entry))
+        .filter(|entry| {
+            !entry.starts_with("run pacman -Qq")
+                && !entry.starts_with("connect ")
+                && !is_state_entry(entry)
+        })
         .collect()
 }
 
@@ -475,11 +476,7 @@ fn a_new_generation_resets_the_attempts() {
         pass(&system, brave, true);
     }
 
-    let context = Context {
-        config: brave,
-        system: &system,
-        online: true,
-    };
+    let context = Context::new(brave, &system);
     let summary = run_pass(
         &context,
         &StateStore::new(&system, SETUP_STATE_DIR),
@@ -510,4 +507,33 @@ fn a_done_or_pending_state_keeps_the_attempts() {
     pass(&system, SetupConfig::default(), true);
     assert_eq!(status(&system, SetupTask::Browser), Some(TaskStatus::Done));
     assert_eq!(attempts(&system, SetupTask::Browser), 2);
+}
+
+#[test]
+fn a_failure_while_the_network_goes_down_is_not_an_attempt() {
+    let system = failing_brave();
+    let context = Context::new(config(Browser::Brave, DeveloperTools::default()), &system);
+    system.set_connectivity(&[true, false]);
+    let summary = run_pass(
+        &context,
+        &StateStore::new(&system, SETUP_STATE_DIR),
+        GENERATION,
+    )
+    .expect("pass runs");
+
+    assert!(summary.failed.is_empty(), "{summary:?}");
+    assert_eq!(summary.waiting_for_network, [SetupTask::Browser]);
+    assert_eq!(
+        status(&system, SetupTask::Browser),
+        Some(TaskStatus::Pending)
+    );
+    assert_eq!(attempts(&system, SetupTask::Browser), 0);
+    assert!(system.commands().contains(&BRAVE_INSTALL.to_owned()));
+}
+
+#[test]
+fn a_pass_without_network_tasks_does_not_probe_the_network() {
+    let system = with_playwright_ready(first_boot());
+    pass(&system, SetupConfig::default(), false);
+    assert_eq!(system.network_probes(), 0);
 }

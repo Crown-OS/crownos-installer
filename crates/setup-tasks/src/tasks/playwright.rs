@@ -13,6 +13,7 @@ use super::{Context, SetupTaskRunner};
 use crate::context::System;
 use crate::error::TaskError;
 use crate::utils::pacman;
+use crate::utils::time_limit::{self, INSTALL_TIME_LIMIT};
 
 /// The `@playwright/cli` release that the runner installs.
 pub const PLAYWRIGHT_CLI_VERSION: &str = "0.1.25";
@@ -99,22 +100,23 @@ impl SetupTaskRunner for PlaywrightTask {
         if !has_playwright_packages(system) {
             let cli_package = format!("@playwright/cli@{PLAYWRIGHT_CLI_VERSION}");
             let mcp_package = format!("@playwright/mcp@{PLAYWRIGHT_MCP_VERSION}");
-            system
-                .run(
-                    "npm",
-                    &[
-                        "install",
-                        "--prefix",
-                        PLAYWRIGHT_PREFIX,
-                        "--cache",
-                        NPM_CACHE,
-                        "--no-fund",
-                        "--no-audit",
-                        &cli_package,
-                        &mcp_package,
-                    ],
-                )?
-                .check("npm install")?;
+            time_limit::run(
+                system,
+                INSTALL_TIME_LIMIT,
+                "npm",
+                &[
+                    "install",
+                    "--prefix",
+                    PLAYWRIGHT_PREFIX,
+                    "--cache",
+                    NPM_CACHE,
+                    "--no-fund",
+                    "--no-audit",
+                    &cli_package,
+                    &mcp_package,
+                ],
+            )?
+            .check("npm install")?;
         }
 
         if !has_cli_link(system) {
@@ -125,17 +127,18 @@ impl SetupTaskRunner for PlaywrightTask {
 
         if needs_firefox_build(context)? {
             let browsers_path = format!("PLAYWRIGHT_BROWSERS_PATH={PLAYWRIGHT_BROWSERS_PATH}");
-            system
-                .run(
-                    "env",
-                    &[
-                        &browsers_path,
-                        &cli.to_string_lossy(),
-                        "install-browser",
-                        "firefox",
-                    ],
-                )?
-                .check("playwright-cli install-browser firefox")?;
+            time_limit::run(
+                system,
+                INSTALL_TIME_LIMIT,
+                "env",
+                &[
+                    &browsers_path,
+                    &cli.to_string_lossy(),
+                    "install-browser",
+                    "firefox",
+                ],
+            )?
+            .check("playwright-cli install-browser firefox")?;
         }
         Ok(())
     }

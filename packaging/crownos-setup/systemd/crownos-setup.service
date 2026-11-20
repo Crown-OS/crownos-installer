@@ -1,5 +1,6 @@
-# A task that needs the network stays pending while the machine is offline,
-# and the restart tries it again.
+# A task that needs the network stays pending while the machine is offline;
+# the NetworkManager hook starts the service again when the network comes up.
+# Restart= is for real failures.
 [Unit]
 Description=CrownOS post-install setup
 Wants=network-online.target

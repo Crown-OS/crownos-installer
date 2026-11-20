@@ -2,7 +2,7 @@
 # directory also starts the service again when a pass ends after --wait gave up.
 [Unit]
 Description=Watch the CrownOS setup choices and task states
-ConditionUser=!root
+ConditionUser=!@system
 
 [Path]
 PathChanged=/etc/crownos/setup.ron

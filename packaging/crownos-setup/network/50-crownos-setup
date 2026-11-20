@@ -1,12 +1,20 @@
 #!/bin/sh
 # NetworkManager runs this script with the interface in $1 and the action
-# in $2. When a connection comes up, start the setup runner again, so that the
-# tasks that wait for the network do not wait for the next boot.
+# in $2. When the network comes up, start the setup runner again, so that the
+# tasks that wait for the network do not wait for the next boot. A runner
+# that waits for its restart after a failure ("activating") keeps its
+# back-off, so a flaky network cannot use up the attempts of a task.
 
 case "$2" in
-up | connectivity-change)
-	systemctl start --no-block crownos-setup.service
+up) ;;
+connectivity-change)
+	[ "$CONNECTIVITY_STATE" = FULL ] || exit 0
+	;;
+*)
+	exit 0
 	;;
 esac
 
+[ "$(systemctl is-active crownos-setup.service)" = activating ] && exit 0
+systemctl start --no-block crownos-setup.service
 exit 0

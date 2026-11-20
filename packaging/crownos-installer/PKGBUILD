@@ -17,7 +17,7 @@ license=('MIT OR Apache-2.0')
 depends=(
   glibc libffi libgcc libglvnd libxkbcommon vulkan-icd-loader wayland
   arch-install-scripts btrfs-progs dosfstools e2fsprogs xfsprogs gptfdisk
-  parted efibootmgr gnupg util-linux systemd
+  parted efibootmgr gnupg util-linux systemd ntfs-3g
 )
 makedepends=(cargo clang)
 options=(!lto !debug)

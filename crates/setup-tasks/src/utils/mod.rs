@@ -9,4 +9,5 @@ pub mod pacman;
 pub mod srcinfo;
 pub mod text;
 pub mod time;
+pub mod time_limit;
 pub mod user_directories;

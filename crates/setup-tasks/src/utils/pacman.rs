@@ -1,21 +1,27 @@
 //! The pacman calls of the setup tasks. An install always refreshes and
 //! upgrades the system (`-Syu`), because `-Sy` without `-u` gives a partial
-//! upgrade. A `--` separates the options from the targets. When another program holds the database lock, each call waits and
-//! tries again. It never deletes `db.lck`.
+//! upgrade. A `--` separates the options from the targets. Each call runs
+//! under [`INSTALL_TIME_LIMIT`]. When another program holds the database
+//! lock, each call waits and tries again. It never deletes `db.lck`.
 
 use std::time::Duration;
 
 use crate::context::{Output, System};
 use crate::error::TaskError;
+use crate::utils::time_limit::{self, INSTALL_TIME_LIMIT};
 
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const LOCK_WAIT_LIMIT: Duration = Duration::from_secs(20 * 60);
 const LOCKED_DATABASE_MESSAGE: &str = "unable to lock database";
 
 pub fn is_installed(system: &dyn System, package: &str) -> bool {
-    system
-        .run("pacman", &["-Qq", "--", package])
-        .is_ok_and(|output| output.succeeded())
+    time_limit::run(
+        system,
+        INSTALL_TIME_LIMIT,
+        "pacman",
+        &["-Qq", "--", package],
+    )
+    .is_ok_and(|output| output.succeeded())
 }
 
 pub fn install(system: &dyn System, packages: &[&str]) -> Result<(), TaskError> {
@@ -49,7 +55,7 @@ fn run_pacman(system: &dyn System, options: &[&str], targets: &[&str]) -> Result
     let args = [options, separator, targets].concat();
     let attempts = LOCK_WAIT_LIMIT.as_secs() / LOCK_RETRY_INTERVAL.as_secs();
     for _ in 0..attempts {
-        let output = system.run("pacman", &args)?;
+        let output = time_limit::run(system, INSTALL_TIME_LIMIT, "pacman", &args)?;
         if !is_database_locked(&output) {
             return output
                 .check(&format!("pacman {}", args.join(" ")))

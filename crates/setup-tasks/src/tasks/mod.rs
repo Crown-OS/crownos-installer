@@ -8,18 +8,40 @@ pub mod playwright;
 #[cfg(test)]
 mod tests;
 
+use std::cell::Cell;
+
 use crownos_config::system::{SetupConfig, SetupTask, TaskState, TaskStatus};
 
 use crate::context::System;
 use crate::error::TaskError;
 use crate::state::StateStore;
+use crate::utils::network;
 use crate::utils::time::now_unix;
 
 pub struct Context<'a> {
     pub config: SetupConfig,
     pub system: &'a dyn System,
-    /// Whether the machine could reach the mirrors when the pass started.
-    pub online: bool,
+    online: Cell<Option<bool>>,
+}
+
+impl<'a> Context<'a> {
+    pub fn new(config: SetupConfig, system: &'a dyn System) -> Self {
+        Self {
+            config,
+            system,
+            online: Cell::new(None),
+        }
+    }
+
+    /// Whether the machine can reach the mirrors. The first call probes the
+    /// network; the later calls of the pass use that result, so a pass where
+    /// no task needs the network does not probe it.
+    pub fn is_online(&self) -> bool {
+        *self
+            .online
+            .get()
+            .get_or_insert_with(|| network::is_online(self.system))
+    }
 }
 
 pub trait SetupTaskRunner {
@@ -68,8 +90,14 @@ impl PassSummary {
 /// Runs each wanted task that is not done and records its state. A task is
 /// `Done` only when it is done after its run. A task that fails does not stop
 /// the tasks after it. A task that needs the network stays `Pending` while
-/// the machine is offline. A task that failed [`MAX_TASK_ATTEMPTS`](crownos_config::system::MAX_TASK_ATTEMPTS) times for
-/// `generation` is not run again, and its state stays as it is.
+/// the machine is offline, and a task whose run fails while the machine is
+/// offline after the run goes back to `Pending` without an attempt. A task
+/// that failed [`MAX_TASK_ATTEMPTS`](crownos_config::system::MAX_TASK_ATTEMPTS)
+/// times for `generation` is not run again, and its state stays as it is.
+///
+/// Known limit: when `RuntimeMaxSec=` stops the service during a pass, the
+/// task stays `Running` and the stop does not count as an attempt. The time
+/// limit of each command makes this rare.
 pub fn run_pass(
     context: &Context,
     store: &StateStore,
@@ -113,7 +141,7 @@ pub fn run_pass(
                 }
                 continue;
             }
-            Ok(false) if !context.online && runner.needs_network(context) => {
+            Ok(false) if runner.needs_network(context) && !context.is_online() => {
                 if !is_recorded(&TaskStatus::Pending) {
                     store.save(task, &state(TaskStatus::Pending, None, None))?;
                 }
@@ -138,6 +166,10 @@ pub fn run_pass(
 
         let finished_state = match outcome {
             Ok(()) => state(TaskStatus::Done, Some(started_at_unix), Some(now_unix())),
+            Err(_) if runner.needs_network(context) && !network::is_online(context.system) => {
+                summary.waiting_for_network.push(task);
+                state(TaskStatus::Pending, None, None)
+            }
             Err(error) => {
                 let message = error.to_string();
                 let failed_state = TaskState {

@@ -24,7 +24,7 @@ const MAX_LINK_HOPS: usize = 40;
 pub struct FakeSystem {
     scripted_results: RefCell<HashMap<String, VecDeque<Output>>>,
     command_writes: HashMap<String, Vec<(PathBuf, String)>>,
-    is_online: bool,
+    connectivity: RefCell<VecDeque<bool>>,
     installed_packages: RefCell<BTreeSet<String>>,
     programs: BTreeSet<String>,
     files: RefCell<BTreeMap<PathBuf, String>>,
@@ -35,7 +35,8 @@ pub struct FakeSystem {
     modification_count: Cell<u64>,
     /// Each call, in order: `run <command line>`, `write <path>`,
     /// `remove <path>`, `remove-all <path>`, `mkdir <path>`, `chown <user> <path>`,
-    /// `symlink <link> -> <target>`, `sleep <seconds>s`.
+    /// `symlink <link> -> <target>`, `sleep <seconds>s`, `connect <address>`.
+    /// A command under `timeout` is recorded without the `timeout` prefix.
     pub journal: RefCell<Vec<String>>,
 }
 
@@ -109,9 +110,28 @@ impl FakeSystem {
     }
 
     /// Lets [`System::can_connect`] succeed.
-    pub fn with_network(mut self) -> Self {
-        self.is_online = true;
+    pub fn with_network(self) -> Self {
+        self.with_connectivity(&[true])
+    }
+
+    /// The results of the next [`System::can_connect`] calls. The last result
+    /// repeats. Without results, the machine is offline.
+    pub fn with_connectivity(self, results: &[bool]) -> Self {
+        self.set_connectivity(results);
         self
+    }
+
+    pub fn set_connectivity(&self, results: &[bool]) {
+        *self.connectivity.borrow_mut() = results.iter().copied().collect();
+    }
+
+    /// The number of [`System::can_connect`] calls.
+    pub fn network_probes(&self) -> usize {
+        self.journal
+            .borrow()
+            .iter()
+            .filter(|entry| entry.starts_with("connect "))
+            .count()
     }
 
     pub fn with_failure(self, command_line: &str, stderr: &str) -> Self {
@@ -248,6 +268,17 @@ fn package_of_file(target: &str) -> &str {
     stem.rsplitn(4, '-').nth(3).unwrap_or(stem)
 }
 
+/// The program and its arguments under `timeout <options> <seconds>`, or
+/// `None` when `program` is not `timeout`.
+fn without_timeout<'a>(program: &str, args: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
+    if program != "timeout" {
+        return None;
+    }
+    let seconds_index = args.iter().position(|arg| !arg.starts_with('-'))?;
+    let (limited_program, limited_args) = args.get(seconds_index + 1..)?.split_first()?;
+    Some((limited_program, limited_args))
+}
+
 fn command_line(program: &str, args: &[&str]) -> String {
     std::iter::once(program)
         .chain(args.iter().copied())
@@ -257,6 +288,9 @@ fn command_line(program: &str, args: &[&str]) -> String {
 
 impl System for FakeSystem {
     fn run(&self, program: &str, args: &[&str]) -> Result<Output, TaskError> {
+        if let Some((limited_program, limited_args)) = without_timeout(program, args) {
+            return self.run(limited_program, limited_args);
+        }
         let line = command_line(program, args);
         self.record(format!("run {line}"));
         self.apply_command_writes(&line);
@@ -283,6 +317,15 @@ impl System for FakeSystem {
         program: &str,
         args: &[&str],
     ) -> Result<Output, TaskError> {
+        if let Some((limited_program, limited_args)) = without_timeout(program, args) {
+            return self.run_as(
+                user,
+                working_directory,
+                environment,
+                limited_program,
+                limited_args,
+            );
+        }
         let assignments = environment
             .iter()
             .map(|(name, value)| format!("{name}={value} "))
@@ -294,10 +337,16 @@ impl System for FakeSystem {
         );
         self.record(format!("run {line}"));
         self.apply_command_writes(&line);
-        Ok(self.scripted_result(&line).unwrap_or(Output {
+        if let Some(output) = self.scripted_result(&line) {
+            return Ok(output);
+        }
+        if !self.programs.contains(program) && !self.command_writes.contains_key(&line) {
+            return Err(TaskError::io(program, io::ErrorKind::NotFound.into()));
+        }
+        Ok(Output {
             status: Some(0),
             ..Output::default()
-        }))
+        })
     }
 
     fn read_file(&self, path: &Path) -> Result<Option<String>, TaskError> {
@@ -317,7 +366,8 @@ impl System for FakeSystem {
     }
 
     fn is_directory(&self, path: &Path) -> bool {
-        self.directories.borrow().contains(path)
+        self.resolve(path)
+            .is_some_and(|resolved| self.directories.borrow().contains(&resolved))
     }
 
     fn find_program(&self, name: &str) -> Option<PathBuf> {
@@ -403,7 +453,13 @@ impl System for FakeSystem {
         self.record(format!("sleep {}s", duration.as_secs()));
     }
 
-    fn can_connect(&self, _address: &str, _timeout: Duration) -> bool {
-        self.is_online
+    fn can_connect(&self, address: &str, _timeout: Duration) -> bool {
+        self.record(format!("connect {address}"));
+        let mut connectivity = self.connectivity.borrow_mut();
+        if connectivity.len() > 1 {
+            connectivity.pop_front().unwrap_or_default()
+        } else {
+            connectivity.front().copied().unwrap_or_default()
+        }
     }
 }

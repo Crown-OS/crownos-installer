@@ -71,9 +71,19 @@ impl SetupSnapshot {
             .map(|runner| runner.id())
     }
 
-    /// True when each wanted task is `Done` for the current choices.
+    /// True when `task` failed too often for the current choices, so the
+    /// runner does not try it again.
+    pub fn has_given_up(&self, task: SetupTask) -> bool {
+        self.states.iter().any(|(recorded_task, state)| {
+            *recorded_task == task && state.generation >= self.generation && state.gave_up()
+        })
+    }
+
+    /// True when each wanted task is `Done` for the current choices or gave
+    /// up: the runner does nothing more for them.
     pub fn is_complete(&self) -> bool {
-        self.wanted_tasks().all(|task| self.is_done(task))
+        self.wanted_tasks()
+            .all(|task| self.is_done(task) || self.has_given_up(task))
     }
 }
 
@@ -134,6 +144,35 @@ pub(crate) mod tests {
         };
         assert!(snapshot.is_complete());
         snapshot.config.developer_tools.codex = true;
+        assert!(!snapshot.is_complete());
+    }
+
+    #[test]
+    fn a_task_that_gave_up_completes_the_wait() {
+        let gave_up = TaskState {
+            attempts: crownos_config::system::MAX_TASK_ATTEMPTS,
+            ..state(
+                TaskStatus::Failed {
+                    message: "target not found".to_owned(),
+                },
+                3,
+            )
+        };
+        let failed_once = TaskState {
+            attempts: 1,
+            ..gave_up.clone()
+        };
+        let mut snapshot = SetupSnapshot {
+            generation: 3,
+            states: vec![
+                (SetupTask::Browser, gave_up),
+                (SetupTask::Playwright, state(TaskStatus::Done, 3)),
+            ],
+            ..SetupSnapshot::default()
+        };
+        assert!(snapshot.has_given_up(SetupTask::Browser));
+        assert!(snapshot.is_complete());
+        snapshot.states[0].1 = failed_once;
         assert!(!snapshot.is_complete());
     }
 }
