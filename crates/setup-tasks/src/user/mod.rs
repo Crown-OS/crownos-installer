@@ -2,6 +2,7 @@
 //! each login. It writes only files under the home directory and never uses
 //! the network.
 
+pub mod accessibility_flags;
 pub mod dock;
 pub mod marker;
 pub mod notification;

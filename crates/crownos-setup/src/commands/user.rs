@@ -85,6 +85,12 @@ fn change_lines(report: &UserSetupReport) -> Vec<String> {
     if report.dock_changed {
         lines.push("put the chosen browser in the dock".to_owned());
     }
+    lines.extend(report.accessibility_flags_changed.iter().map(|path| {
+        format!(
+            "made the accessibility flag in {} follow the visual context setting",
+            path.display()
+        )
+    }));
     lines
 }
 
@@ -142,6 +148,7 @@ mod tests {
             merged: vec![("/home/ada/.cursor/mcp.json".into(), "playwright")],
             playwright_configured: true,
             dock_changed: true,
+            accessibility_flags_changed: vec!["/home/ada/.config/chromium-flags.conf".into()],
             ..UserSetupReport::default()
         };
         assert_eq!(
@@ -151,6 +158,7 @@ mod tests {
                 "added the playwright MCP server to /home/ada/.cursor/mcp.json",
                 "set the browser of playwright-cli",
                 "put the chosen browser in the dock",
+                "made the accessibility flag in /home/ada/.config/chromium-flags.conf follow the visual context setting",
             ]
         );
     }

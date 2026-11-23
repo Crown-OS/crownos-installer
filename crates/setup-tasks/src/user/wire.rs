@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{SetupSnapshot, dock};
+use super::{SetupSnapshot, accessibility_flags, dock};
 use crate::agents::playwright_cli::{self, ConfigurationChange};
 use crate::agents::{self, skills};
 use crate::context::System;
@@ -29,6 +29,8 @@ pub struct UserSetupReport {
     pub failed: Vec<(PathBuf, TaskError)>,
     pub playwright_configured: bool,
     pub dock_changed: bool,
+    /// The browser and Electron flags files that the run changed.
+    pub accessibility_flags_changed: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,10 +72,10 @@ impl UserSetupReport {
 }
 
 /// Links the skills and adds the MCP servers for each agent on the account,
-/// sets the browser of `playwright-cli` when it is installed, and points the
-/// dock at the browser one time for each generation. Each step adds only, so
-/// a second run changes nothing. A step that fails does not stop the steps
-/// after it.
+/// sets the browser of `playwright-cli` when it is installed, points the dock
+/// at the browser one time for each generation, and makes the browser and
+/// Electron flags files follow `visual_context.enabled`. A second run changes
+/// nothing. A step that fails does not stop the steps after it.
 pub fn wire(
     system: &dyn System,
     directories: &UserDirectories,
@@ -140,7 +142,32 @@ pub fn wire(
         }
         Err(error) => report.failed.push((directories.dock_file(), error)),
     }
+
+    update_accessibility_flags(system, directories, &mut report);
     report
+}
+
+fn update_accessibility_flags(
+    system: &dyn System,
+    directories: &UserDirectories,
+    report: &mut UserSetupReport,
+) {
+    let Some(enabled) = report.record_failure(
+        &directories.visual_context_file(),
+        accessibility_flags::is_visual_context_enabled(system, directories),
+    ) else {
+        return;
+    };
+    for path in accessibility_flags::flags_files(directories) {
+        match accessibility_flags::update_flags_file(system, &path, enabled) {
+            Ok(true) => report.accessibility_flags_changed.push(path),
+            Ok(false) => {}
+            Err(TaskError::SymbolicLink(path)) => {
+                report.skipped.push((path, SkipReason::SymbolicLink));
+            }
+            Err(error) => report.failed.push((path, error)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -241,6 +268,34 @@ mod tests {
         );
         assert_eq!(report.merged.len(), 3);
         assert!(report.dock_changed);
+    }
+
+    #[test]
+    fn the_flags_files_follow_the_visual_context_switch() {
+        let visual_context = "/home/ada/.config/crownos/visual_context.ron";
+        let chromium_flags = "/home/ada/.config/chromium-flags.conf";
+        let system = FakeSystem::new()
+            .with_file(visual_context, "(enabled: true)")
+            .with_file(chromium_flags, "--ozone-platform=wayland\n");
+        let report = wire(&system, &directories(), &done_snapshot(Browser::Chromium));
+        assert_eq!(report.accessibility_flags_changed.len(), 5);
+        assert_eq!(
+            system.file(chromium_flags).as_deref(),
+            Some("--ozone-platform=wayland\n--force-renderer-accessibility=basic\n")
+        );
+
+        system.clear_journal();
+        let second_report = wire(&system, &directories(), &done_snapshot(Browser::Chromium));
+        assert!(second_report.accessibility_flags_changed.is_empty());
+        assert!(system.journal().is_empty(), "{:?}", system.journal());
+
+        let system = system.with_file(visual_context, "(enabled: false)");
+        let report = wire(&system, &directories(), &done_snapshot(Browser::Chromium));
+        assert_eq!(report.accessibility_flags_changed.len(), 5);
+        assert_eq!(
+            system.file(chromium_flags).as_deref(),
+            Some("--ozone-platform=wayland\n")
+        );
     }
 
     #[test]

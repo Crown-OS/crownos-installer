@@ -33,6 +33,10 @@ impl UserDirectories {
     pub fn dock_file(&self) -> PathBuf {
         self.config_home.join("crownos/dock.ron")
     }
+
+    pub fn visual_context_file(&self) -> PathBuf {
+        self.config_home.join("crownos/visual_context.ron")
+    }
 }
 
 #[cfg(test)]
