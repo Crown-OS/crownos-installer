@@ -79,8 +79,7 @@ impl System for RealSystem {
         let write = || -> io::Result<()> {
             let mut file = OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .mode(mode)
                 .open(&temporary_path)?;
             file.set_permissions(fs::Permissions::from_mode(mode))?;
