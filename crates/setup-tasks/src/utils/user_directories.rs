@@ -37,6 +37,11 @@ impl UserDirectories {
     pub fn visual_context_file(&self) -> PathBuf {
         self.config_home.join("crownos/visual_context.ron")
     }
+
+    pub fn accessibility_flags_record(&self) -> PathBuf {
+        self.state_home
+            .join("crownos/setup/accessibility-flags.ron")
+    }
 }
 
 #[cfg(test)]

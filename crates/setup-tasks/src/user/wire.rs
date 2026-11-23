@@ -152,22 +152,15 @@ fn update_accessibility_flags(
     directories: &UserDirectories,
     report: &mut UserSetupReport,
 ) {
-    let Some(enabled) = report.record_failure(
-        &directories.visual_context_file(),
-        accessibility_flags::is_visual_context_enabled(system, directories),
-    ) else {
-        return;
-    };
-    for path in accessibility_flags::flags_files(directories) {
-        match accessibility_flags::update_flags_file(system, &path, enabled) {
-            Ok(true) => report.accessibility_flags_changed.push(path),
-            Ok(false) => {}
-            Err(TaskError::SymbolicLink(path)) => {
-                report.skipped.push((path, SkipReason::SymbolicLink));
-            }
-            Err(error) => report.failed.push((path, error)),
-        }
-    }
+    let update = accessibility_flags::follow_visual_context(system, directories);
+    report.accessibility_flags_changed.extend(update.changed);
+    report.skipped.extend(
+        update
+            .linked
+            .into_iter()
+            .map(|link| (link, SkipReason::SymbolicLink)),
+    );
+    report.failed.extend(update.failed);
 }
 
 #[cfg(test)]
@@ -275,10 +268,14 @@ mod tests {
         let visual_context = "/home/ada/.config/crownos/visual_context.ron";
         let chromium_flags = "/home/ada/.config/chromium-flags.conf";
         let system = FakeSystem::new()
+            .with_program("chromium")
             .with_file(visual_context, "(enabled: true)")
             .with_file(chromium_flags, "--ozone-platform=wayland\n");
         let report = wire(&system, &directories(), &done_snapshot(Browser::Chromium));
-        assert_eq!(report.accessibility_flags_changed.len(), 5);
+        assert_eq!(
+            report.accessibility_flags_changed,
+            [PathBuf::from(chromium_flags)]
+        );
         assert_eq!(
             system.file(chromium_flags).as_deref(),
             Some("--ozone-platform=wayland\n--force-renderer-accessibility=basic\n")
@@ -291,7 +288,7 @@ mod tests {
 
         let system = system.with_file(visual_context, "(enabled: false)");
         let report = wire(&system, &directories(), &done_snapshot(Browser::Chromium));
-        assert_eq!(report.accessibility_flags_changed.len(), 5);
+        assert_eq!(report.accessibility_flags_changed.len(), 1);
         assert_eq!(
             system.file(chromium_flags).as_deref(),
             Some("--ozone-platform=wayland\n")
