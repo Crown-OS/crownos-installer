@@ -25,21 +25,22 @@ fn entry(server: &McpServer) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::servers::with_every_server_command;
     use crate::context::fake::FakeSystem;
 
     const PATH: &str = "/home/ada/.cursor/mcp.json";
 
     #[test]
-    fn a_missing_file_gets_both_servers() {
-        let system = FakeSystem::new();
+    fn a_missing_file_gets_every_installed_server() {
+        let system = with_every_server_command(FakeSystem::new());
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");
-        assert_eq!(merge.added.len(), 2);
+        assert_eq!(merge.added.len(), 3);
         assert_eq!(
             system.file(PATH).as_deref(),
             Some(
-                "{\n  \"mcpServers\": {\n    \"crownos-computer-use\": {\n      \"type\": \"stdio\",\n      \"command\": \"crownos-computer-use\",\n      \"args\": [\n        \"mcp\"\n      ]\n    },\n    \"playwright\": {\n      \"type\": \"stdio\",\n      \"command\": \"crownos-setup\",\n      \"args\": [\n        \"playwright-mcp\"\n      ]\n    }\n  }\n}\n"
+                "{\n  \"mcpServers\": {\n    \"crownos-computer-use\": {\n      \"type\": \"stdio\",\n      \"command\": \"crownos-computer-use\",\n      \"args\": [\n        \"mcp\"\n      ]\n    },\n    \"playwright\": {\n      \"type\": \"stdio\",\n      \"command\": \"crownos-setup\",\n      \"args\": [\n        \"playwright-mcp\"\n      ]\n    },\n    \"crownos-secrets\": {\n      \"type\": \"stdio\",\n      \"command\": \"crownos-secrets-mcp\",\n      \"args\": []\n    }\n  }\n}\n"
             )
         );
         assert!(
@@ -51,7 +52,7 @@ mod tests {
 
     #[test]
     fn other_keys_stay_in_their_order() {
-        let system = FakeSystem::new()
+        let system = with_every_server_command(FakeSystem::new())
             .with_directory("/home/ada/.cursor")
             .with_file(
                 PATH,
@@ -69,7 +70,12 @@ mod tests {
             .collect();
         assert_eq!(
             server_names,
-            ["github", "crownos-computer-use", "playwright"]
+            [
+                "github",
+                "crownos-computer-use",
+                "playwright",
+                "crownos-secrets"
+            ]
         );
         assert!(
             !system
@@ -82,7 +88,10 @@ mod tests {
     #[test]
     fn a_server_with_the_same_name_is_kept_and_the_file_stays() {
         let text = r#"{"mcpServers": {"playwright": {"command": "npx"}, "crownos-computer-use": {"type": "stdio", "command": "crownos-computer-use", "args": ["mcp"]}}}"#;
-        let system = FakeSystem::new().with_file(PATH, text);
+        let system = FakeSystem::new()
+            .with_program("crownos-computer-use")
+            .with_program("crownos-setup")
+            .with_file(PATH, text);
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");

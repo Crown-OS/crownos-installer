@@ -27,17 +27,22 @@ fn entry(server: &McpServer) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::servers::with_every_server_command;
     use crate::context::fake::FakeSystem;
 
     const PATH: &str = "/home/ada/.gemini/settings.json";
 
     #[test]
     fn the_servers_join_the_other_settings() {
-        let system = FakeSystem::new().with_file(PATH, r#"{"hooks": {"x": 1}}"#);
+        let system =
+            with_every_server_command(FakeSystem::new()).with_file(PATH, r#"{"hooks": {"x": 1}}"#);
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");
-        assert_eq!(merge.added, ["crownos-computer-use", "playwright"]);
+        assert_eq!(
+            merge.added,
+            ["crownos-computer-use", "playwright", "crownos-secrets"]
+        );
         let document: Value =
             serde_json::from_str(&system.file(PATH).expect("written")).expect("JSON");
         assert_eq!(document["hooks"], json!({ "x": 1 }));
@@ -49,17 +54,20 @@ mod tests {
 
     #[test]
     fn an_empty_file_gets_the_servers() {
-        let system = FakeSystem::new().with_file(PATH, "\n");
+        let system = with_every_server_command(FakeSystem::new()).with_file(PATH, "\n");
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");
-        assert_eq!(merge.added.len(), 2);
+        assert_eq!(merge.added.len(), 3);
     }
 
     #[test]
     fn a_server_with_the_same_name_is_kept_and_the_file_stays() {
         let text = r#"{"mcpServers": {"playwright": {"command": "npx"}, "crownos-computer-use": {"command": "crownos-computer-use", "args": ["mcp"]}}}"#;
-        let system = FakeSystem::new().with_file(PATH, text);
+        let system = FakeSystem::new()
+            .with_program("crownos-computer-use")
+            .with_program("crownos-setup")
+            .with_file(PATH, text);
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");
@@ -70,7 +78,7 @@ mod tests {
 
     #[test]
     fn a_broken_file_is_skipped() {
-        let system = FakeSystem::new().with_file(PATH, "{ not json");
+        let system = with_every_server_command(FakeSystem::new()).with_file(PATH, "{ not json");
         assert_eq!(
             merge_servers(&system, Path::new(PATH)).expect("reads"),
             None

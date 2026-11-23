@@ -27,17 +27,21 @@ fn entry(server: &McpServer) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::servers::with_every_server_command;
     use crate::context::fake::FakeSystem;
 
     const PATH: &str = "/home/ada/.gemini/config/mcp_config.json";
 
     #[test]
     fn a_missing_file_gets_the_servers_with_an_empty_environment() {
-        let system = FakeSystem::new();
+        let system = with_every_server_command(FakeSystem::new());
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");
-        assert_eq!(merge.added, ["crownos-computer-use", "playwright"]);
+        assert_eq!(
+            merge.added,
+            ["crownos-computer-use", "playwright", "crownos-secrets"]
+        );
         let document: Value =
             serde_json::from_str(&system.file(PATH).expect("written")).expect("JSON");
         assert_eq!(
@@ -49,7 +53,10 @@ mod tests {
     #[test]
     fn a_server_with_the_same_command_and_arguments_is_silent() {
         let text = r#"{"mcpServers": {"playwright": {"command": "crownos-setup", "args": ["playwright-mcp"]}, "crownos-computer-use": {"command": "crownos-computer-use", "args": ["mcp", "--debug"]}}}"#;
-        let system = FakeSystem::new().with_file(PATH, text);
+        let system = FakeSystem::new()
+            .with_program("crownos-computer-use")
+            .with_program("crownos-setup")
+            .with_file(PATH, text);
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");

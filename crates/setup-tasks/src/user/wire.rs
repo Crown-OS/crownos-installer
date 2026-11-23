@@ -149,6 +149,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::agents::servers::with_every_server_command;
     use crate::context::fake::FakeSystem;
     use crate::user::snapshot::tests::state;
 
@@ -183,7 +184,7 @@ mod tests {
 
     #[test]
     fn every_step_runs_and_a_second_run_writes_nothing() {
-        let system = FakeSystem::new()
+        let system = with_every_server_command(FakeSystem::new())
             .with_program("codex")
             .with_program("agy")
             .with_directory(SKILL)
@@ -201,7 +202,7 @@ mod tests {
                 PathBuf::from("/home/ada/.gemini/config/skills/computer-use")
             ]
         );
-        assert_eq!(report.merged.len(), 4);
+        assert_eq!(report.merged.len(), 6);
         assert!(report.kept.is_empty() && report.failed.is_empty());
         assert_eq!(
             report.skipped,
@@ -227,7 +228,7 @@ mod tests {
 
     #[test]
     fn a_failed_step_does_not_stop_the_next_steps() {
-        let system = FakeSystem::new()
+        let system = with_every_server_command(FakeSystem::new())
             .with_program("codex")
             .with_directory(SKILL)
             .with_racing_link("/home/ada/.agents/skills/computer-use", "/opt/other")
@@ -238,7 +239,7 @@ mod tests {
             report.failed[0].0,
             PathBuf::from("/home/ada/.agents/skills")
         );
-        assert_eq!(report.merged.len(), 2);
+        assert_eq!(report.merged.len(), 3);
         assert!(report.dock_changed);
     }
 

@@ -27,13 +27,15 @@ fn entry(server: &McpServer) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::servers::with_every_server_command;
     use crate::context::fake::FakeSystem;
 
     const PATH: &str = "/home/ada/.config/zed/settings.json";
 
     #[test]
     fn a_plain_file_gets_the_servers_with_an_empty_environment() {
-        let system = FakeSystem::new().with_file(PATH, r#"{"theme": "One Dark"}"#);
+        let system = with_every_server_command(FakeSystem::new())
+            .with_file(PATH, r#"{"theme": "One Dark"}"#);
         merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");
@@ -48,22 +50,25 @@ mod tests {
 
     #[test]
     fn a_missing_file_gets_the_servers() {
-        let system = FakeSystem::new();
+        let system = with_every_server_command(FakeSystem::new());
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");
-        assert_eq!(merge.added, ["crownos-computer-use", "playwright"]);
+        assert_eq!(
+            merge.added,
+            ["crownos-computer-use", "playwright", "crownos-secrets"]
+        );
         assert!(system.file(PATH).is_some());
     }
 
     #[test]
     fn a_server_with_the_same_name_is_kept() {
         let text = r#"{"context_servers": {"crownos-computer-use": {"command": "other"}}}"#;
-        let system = FakeSystem::new().with_file(PATH, text);
+        let system = with_every_server_command(FakeSystem::new()).with_file(PATH, text);
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("plain JSON");
-        assert_eq!(merge.added, ["playwright"]);
+        assert_eq!(merge.added, ["playwright", "crownos-secrets"]);
         assert_eq!(merge.kept, ["crownos-computer-use"]);
         let document: Value =
             serde_json::from_str(&system.file(PATH).expect("written")).expect("JSON");
@@ -76,7 +81,7 @@ mod tests {
     #[test]
     fn a_file_with_comments_is_skipped() {
         let text = "// Zed settings\n{\n  \"theme\": \"One Dark\",\n}\n";
-        let system = FakeSystem::new().with_file(PATH, text);
+        let system = with_every_server_command(FakeSystem::new()).with_file(PATH, text);
         assert_eq!(
             merge_servers(&system, Path::new(PATH)).expect("reads"),
             None

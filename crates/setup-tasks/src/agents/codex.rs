@@ -5,7 +5,7 @@ use std::path::Path;
 
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
-use super::servers::{McpServer, SERVERS};
+use super::servers::{McpServer, installed_servers};
 use crate::context::System;
 use crate::error::TaskError;
 use crate::utils::home_file;
@@ -21,7 +21,7 @@ pub fn merge_servers(
     let Ok(mut document) = text.parse::<DocumentMut>() else {
         return Ok(None);
     };
-    let Some(merge) = merge_into_document(&mut document) else {
+    let Some(merge) = merge_into_document(system, &mut document) else {
         return Ok(None);
     };
     if !merge.added.is_empty() {
@@ -30,7 +30,7 @@ pub fn merge_servers(
     Ok(Some(merge))
 }
 
-fn merge_into_document(document: &mut DocumentMut) -> Option<Merge<'static>> {
+fn merge_into_document(system: &dyn System, document: &mut DocumentMut) -> Option<Merge<'static>> {
     let servers_table = document
         .entry(SERVERS_KEY)
         .or_insert_with(|| {
@@ -40,7 +40,7 @@ fn merge_into_document(document: &mut DocumentMut) -> Option<Merge<'static>> {
         })
         .as_table_mut()?;
     let mut merge = Merge::default();
-    for server in &SERVERS {
+    for server in installed_servers(system) {
         match servers_table.get(server.name) {
             None => {
                 servers_table.insert(server.name, Item::Table(server_table(server)));
@@ -84,20 +84,21 @@ fn is_same_server(existing: &Item, server: &McpServer) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::servers::with_every_server_command;
     use crate::context::fake::FakeSystem;
 
     const PATH: &str = "/home/ada/.codex/config.toml";
 
     #[test]
     fn a_missing_file_gets_a_table_for_each_server() {
-        let system = FakeSystem::new();
+        let system = with_every_server_command(FakeSystem::new());
         merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("TOML");
         assert_eq!(
             system.file(PATH).as_deref(),
             Some(
-                "[mcp_servers.crownos-computer-use]\ncommand = \"crownos-computer-use\"\nargs = [\"mcp\"]\n\n[mcp_servers.playwright]\ncommand = \"crownos-setup\"\nargs = [\"playwright-mcp\"]\n"
+                "[mcp_servers.crownos-computer-use]\ncommand = \"crownos-computer-use\"\nargs = [\"mcp\"]\n\n[mcp_servers.playwright]\ncommand = \"crownos-setup\"\nargs = [\"playwright-mcp\"]\n\n[mcp_servers.crownos-secrets]\ncommand = \"crownos-secrets-mcp\"\nargs = []\n"
             )
         );
     }
@@ -105,11 +106,11 @@ mod tests {
     #[test]
     fn comments_and_other_tables_stay() {
         let text = "# My Codex settings\nmodel = \"gpt-5\"  # the default\n\n[projects.\"/home/ada/code\"]\ntrust_level = \"trusted\"\n";
-        let system = FakeSystem::new().with_file(PATH, text);
+        let system = with_every_server_command(FakeSystem::new()).with_file(PATH, text);
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("TOML");
-        assert_eq!(merge.added.len(), 2);
+        assert_eq!(merge.added.len(), 3);
         let written = system.file(PATH).expect("written");
         assert!(written.starts_with(text), "{written}");
         assert!(written.contains("[mcp_servers.playwright]\ncommand = \"crownos-setup\"\n"));
@@ -118,7 +119,10 @@ mod tests {
     #[test]
     fn a_server_with_the_same_name_is_kept() {
         let text = "[mcp_servers.playwright]\ncommand = \"npx\"\nargs = [\"@playwright/mcp@latest\"]\n\n[mcp_servers.crownos-computer-use]\ncommand = \"crownos-computer-use\"\nargs = [\"mcp\"]\n";
-        let system = FakeSystem::new().with_file(PATH, text);
+        let system = FakeSystem::new()
+            .with_program("crownos-computer-use")
+            .with_program("crownos-setup")
+            .with_file(PATH, text);
         let merge = merge_servers(&system, Path::new(PATH))
             .expect("merges")
             .expect("TOML");
@@ -134,7 +138,7 @@ mod tests {
 
     #[test]
     fn a_file_that_is_not_toml_is_skipped() {
-        let system = FakeSystem::new().with_file(PATH, "model = \n");
+        let system = with_every_server_command(FakeSystem::new()).with_file(PATH, "model = \n");
         assert_eq!(
             merge_servers(&system, Path::new(PATH)).expect("reads"),
             None
