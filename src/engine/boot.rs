@@ -72,7 +72,7 @@ const SNAPPER_CONFIGS_FILE: &str = "/etc/conf.d/snapper";
 /// root.
 const RECOVER_FINISH_SERVICE: &str = "crownos-recover-finish.service";
 
-/// The update daemon. [`base::SERVICES`](super::base::SERVICES) enables it;
+/// The update daemon. [`base::CROWNOS_PRESET`](super::base::CROWNOS_PRESET) enables it;
 /// the verification script reports it because the install test asserts it.
 const UPDATE_SERVICE: &str = "crownos-updated.service";
 

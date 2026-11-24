@@ -26,17 +26,18 @@
 //! # What this module is not allowed to do
 //!
 //! Decide anything. Every device node, offset, package and file body was fixed by
-//! [`plan`](super::plan). The two exceptions are marked in the code, are both
-//! "leave this alone if it is already there" checks against the shared ESP, and
-//! exist because whether a file is present is not knowable without touching the
-//! disk.
+//! [`plan`](super::plan). The exceptions are marked in the code and exist
+//! because whether a file is present is not knowable without touching the
+//! disk: two "leave this alone if it is already there" checks against the
+//! shared ESP, and [`Cmd::PresetUnits`], which reads the preset file that
+//! `pacstrap` put into the new system.
 
 use std::borrow::Cow;
 use std::fmt;
 
 use anyhow::{Context as _, Result};
 
-use crate::util::fstab;
+use crate::util::{fstab, preset};
 
 use super::base;
 use super::boot;
@@ -148,6 +149,15 @@ pub enum Cmd {
     /// Copy a file, if the source exists, and never over an existing copy.
     /// Used to take a backup we may not need.
     CopyIfPresent { from: String, to: String },
+    /// `systemctl preset` inside `root` for the units of the `enable` lines of
+    /// `preset`, or for `fallback_units` when `root` has no `preset`. The
+    /// units are then written to `record`, one on each line.
+    PresetUnits {
+        root: String,
+        preset: String,
+        fallback_units: Vec<String>,
+        record: String,
+    },
     /// `mkdir -p`.
     MakeDirs { path: String },
     /// Run a command whose failure is logged rather than stopping the install:
@@ -209,6 +219,17 @@ impl fmt::Display for Cmd {
             }
             Self::WriteFile { path, contents } => write_display(f, path, contents),
             Self::CopyIfPresent { from, to } => write!(f, "cp {from} {to} (if {from} exists)"),
+            Self::PresetUnits {
+                root,
+                preset,
+                fallback_units,
+                record,
+            } => write!(
+                f,
+                "arch-chroot {root} systemctl preset -- <the enable lines of {preset}, \
+                 else {}> and the same units > {root}{record}",
+                fallback_units.join(" ")
+            ),
             Self::MakeDirs { path } => write!(f, "mkdir -p {path}"),
             Self::BestEffort(command) => write!(f, "{command}  # allowed to fail"),
         }
@@ -304,6 +325,12 @@ impl Cmd {
                     Ok(format!("{from} is not there — nothing to back up"))
                 }
             }
+            Self::PresetUnits {
+                root,
+                preset,
+                fallback_units,
+                record,
+            } => preset_units(system, root, preset, fallback_units, record),
             Self::MakeDirs { path } => system.run("mkdir", &["-p", "--", path]),
             Self::BestEffort(command) => Ok(command
                 .apply(system)
@@ -314,6 +341,39 @@ impl Cmd {
 
 fn borrow(args: &[String]) -> Vec<&str> {
     args.iter().map(String::as_str).collect()
+}
+
+/// The exception: whether crownos-base in `root` ships the preset file is
+/// known only after `pacstrap`.
+fn preset_units(
+    system: &dyn System,
+    root: &str,
+    preset: &str,
+    fallback_units: &[String],
+    record: &str,
+) -> Result<String> {
+    let preset_path = format!("{root}{preset}");
+    let preset_text = if system.exists(&preset_path) {
+        Some(system.read_file(&preset_path)?)
+    } else {
+        None
+    };
+    let units: Vec<&str> = match &preset_text {
+        Some(text) => preset::enabled_units(text).collect(),
+        None => borrow(fallback_units),
+    };
+    let output = if units.is_empty() {
+        format!("{preset_path} enables no unit")
+    } else {
+        let mut args = vec![root, "systemctl", "preset", "--"];
+        args.extend(&units);
+        system.run("arch-chroot", &args)?
+    };
+    system.write_file(
+        &format!("{root}{record}"),
+        &preset::applied_presets_record(units),
+    )?;
+    Ok(output)
 }
 
 // --- MARK: Execution ---
@@ -648,13 +708,17 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
         Step::EnableAutologin { root, username } => vec![base::autologin(root, username)],
 
         Step::EnableServices { root, units } => {
-            let mut args = vec!["enable".to_owned()];
-            args.extend(units.iter().cloned());
-            vec![Cmd::Chroot {
-                root: root.clone(),
-                program: "systemctl".to_owned(),
-                args,
-            }]
+            let mut commands = vec![base::enable_preset_services(root)];
+            if !units.is_empty() {
+                let mut args = vec!["enable".to_owned()];
+                args.extend(units.iter().cloned());
+                commands.push(Cmd::Chroot {
+                    root: root.clone(),
+                    program: "systemctl".to_owned(),
+                    args,
+                });
+            }
+            commands
         }
 
         Step::Unmount { at } => vec![
@@ -980,6 +1044,31 @@ mod tests {
         let note = command.apply(&absent).expect("apply");
         assert!(note.contains("nothing to back up"), "{note}");
         assert!(absent.journal().is_empty(), "{:?}", absent.journal());
+    }
+
+    #[test]
+    fn the_preset_file_of_the_new_system_names_the_units_and_the_record() {
+        let preset = "/mnt/usr/lib/systemd/system-preset/80-crownos.preset";
+        let command = base::enable_preset_services("/mnt");
+        let with_preset = fixture::FakeSystem::new()
+            .with_file(preset, "# CrownOS\nenable a.service\nenable b.timer\n")
+            .with_command("arch-chroot /mnt systemctl preset -- a.service b.timer", "");
+        command.apply(&with_preset).expect("apply");
+        assert_eq!(
+            with_preset.journal(),
+            [
+                "arch-chroot /mnt systemctl preset -- a.service b.timer",
+                "write /mnt/var/lib/crownos/update/applied-presets (18 bytes)",
+            ]
+        );
+
+        let fallback = format!(
+            "arch-chroot /mnt systemctl preset -- {}",
+            base::SERVICES.join(" ")
+        );
+        let without_preset = fixture::FakeSystem::new().with_command(&fallback, "");
+        command.apply(&without_preset).expect("apply");
+        assert_eq!(without_preset.journal().first(), Some(&fallback));
     }
 
     /// A committing run against the fake system, to prove the command paths

@@ -748,7 +748,9 @@ pub enum Step {
         root: String,
         esp_rel: String,
     },
-    /// `systemctl enable`.
+    /// `systemctl preset` for the units of the CrownOS preset file, then
+    /// `systemctl enable` for `units`, which depend on the machine and the
+    /// user's choices.
     EnableServices { root: String, units: Vec<String> },
     /// Unmount everything under the target root.
     Unmount { at: String },
@@ -1665,10 +1667,8 @@ fn system_steps(
         },
         Step::EnableServices {
             root: root.clone(),
-            units: base::SERVICES
-                .iter()
-                .copied()
-                .chain(switcheroo)
+            units: switcheroo
+                .into_iter()
                 .chain(windows_apps)
                 .chain(setup_runner)
                 .map(str::to_owned)
@@ -3198,6 +3198,25 @@ mod tests {
     }
 
     #[test]
+    fn the_base_units_come_from_the_preset_and_only_chosen_units_are_enabled() {
+        let plan = iso_plan_with(|_| {}).expect("a plan");
+        let units = enabled_units(&plan);
+        assert!(
+            base::SERVICES
+                .iter()
+                .all(|service| !units.iter().any(|unit| unit == service)),
+            "{units:?}"
+        );
+        let log = commands(&plan);
+        assert!(
+            !log.lines()
+                .any(|line| line.trim_end().ends_with("systemctl enable")),
+            "{log}"
+        );
+        assert!(log.contains("systemctl preset --"), "{log}");
+    }
+
+    #[test]
     fn windows_apps_enable_the_first_boot_setup_only_when_asked() {
         let enables_it = |plan: Plan| {
             plan.steps.iter().any(|step| match step {
@@ -3593,8 +3612,10 @@ mod tests {
             "Server = https://repo.crownos.org/v0.1.12/$arch",
             "crownos-updated.service",
             "%wheel ALL=(ALL:ALL) ALL",
-            "systemctl enable NetworkManager.service systemd-timesyncd.service",
+            "arch-chroot /mnt systemctl preset -- <the enable lines of /usr/lib/systemd/system-preset/80-crownos.preset",
+            "else NetworkManager.service systemd-timesyncd.service",
             "snapper-cleanup.timer",
+            "> /mnt/var/lib/crownos/update/applied-presets",
         ] {
             assert!(log.contains(expected), "`{expected}` missing from {log}");
         }

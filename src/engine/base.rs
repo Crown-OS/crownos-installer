@@ -45,8 +45,17 @@ pub const OFFLINE_PACMAN_CONF: &str = "/etc/pacman.d/crownos-offline.conf";
 /// The group whose members may use `sudo`.
 pub const ADMIN_GROUP: &str = "wheel";
 
-/// Units enabled in the new system. CrownOS ships no display manager: signing
-/// in on tty1 opens the desktop.
+/// The distribution default of which units are on, shipped by crownos-base.
+/// crownos-updated enables the units of lines that a later release adds.
+pub const CROWNOS_PRESET: &str = "/usr/lib/systemd/system-preset/80-crownos.preset";
+
+/// The units of [`CROWNOS_PRESET`] that are already applied, read by
+/// crownos-updated, so the first update does not enable them again.
+pub const APPLIED_PRESETS_RECORD: &str = "/var/lib/crownos/update/applied-presets";
+
+/// The units enabled when the installed crownos-base has no
+/// [`CROWNOS_PRESET`], as in 0.3.0 and earlier. CrownOS ships no display
+/// manager: signing in on tty1 opens the desktop.
 pub const SERVICES: &[&str] = &[
     "NetworkManager.service",
     "systemd-timesyncd.service",
@@ -192,6 +201,18 @@ pub fn add_crownos_repository(root: &str, channel: &str) -> Vec<Cmd> {
             filter: None,
         },
     ]
+}
+
+/// `systemctl preset` for the units of [`CROWNOS_PRESET`] in `root`, or for
+/// [`SERVICES`] when the file is missing, and the record of them for
+/// crownos-updated.
+pub fn enable_preset_services(root: &str) -> Cmd {
+    Cmd::PresetUnits {
+        root: root.to_owned(),
+        preset: CROWNOS_PRESET.to_owned(),
+        fallback_units: SERVICES.iter().map(|unit| (*unit).to_owned()).collect(),
+        record: APPLIED_PRESETS_RECORD.to_owned(),
+    }
 }
 
 /// Sign `username` in on tty1 at boot without a password.

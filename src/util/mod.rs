@@ -8,4 +8,5 @@ pub mod mirror;
 pub mod network;
 pub mod pci;
 pub mod png;
+pub mod preset;
 pub mod worker;
