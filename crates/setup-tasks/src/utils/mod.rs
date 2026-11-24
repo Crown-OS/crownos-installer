@@ -1,5 +1,4 @@
 pub mod browser_fallback;
-pub mod dock;
 pub mod flags_file;
 pub mod home_file;
 pub mod json_file;

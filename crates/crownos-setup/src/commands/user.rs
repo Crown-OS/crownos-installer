@@ -82,9 +82,6 @@ fn change_lines(report: &UserSetupReport) -> Vec<String> {
     if report.playwright_configured {
         lines.push("set the browser of playwright-cli".to_owned());
     }
-    if report.dock_changed {
-        lines.push("put the chosen browser in the dock".to_owned());
-    }
     lines.extend(report.accessibility_flags_changed.iter().map(|path| {
         format!(
             "made the accessibility flag in {} follow the visual context setting",
@@ -124,7 +121,7 @@ mod tests {
                     SkipReason::UnexpectedFormat,
                 ),
                 (
-                    "/home/ada/.config/crownos/dock.ron".into(),
+                    "/home/ada/.config/chromium-flags.conf".into(),
                     SkipReason::SymbolicLink,
                 ),
             ],
@@ -136,7 +133,7 @@ mod tests {
             [
                 "kept the playwright MCP server in /home/ada/.codex/config.toml: it has other settings",
                 "did not change /home/ada/.config/zed/settings.json: it has comments or an unexpected format",
-                "did not change /home/ada/.config/crownos/dock.ron: it is a symbolic link",
+                "did not change /home/ada/.config/chromium-flags.conf: it is a symbolic link",
             ]
         );
     }
@@ -147,7 +144,6 @@ mod tests {
             linked: vec!["/home/ada/.agents/skills/computer-use".into()],
             merged: vec![("/home/ada/.cursor/mcp.json".into(), "playwright")],
             playwright_configured: true,
-            dock_changed: true,
             accessibility_flags_changed: vec!["/home/ada/.config/chromium-flags.conf".into()],
             ..UserSetupReport::default()
         };
@@ -157,7 +153,6 @@ mod tests {
                 "linked the skill /home/ada/.agents/skills/computer-use",
                 "added the playwright MCP server to /home/ada/.cursor/mcp.json",
                 "set the browser of playwright-cli",
-                "put the chosen browser in the dock",
                 "made the accessibility flag in /home/ada/.config/chromium-flags.conf follow the visual context setting",
             ]
         );

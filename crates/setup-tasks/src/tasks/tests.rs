@@ -8,8 +8,6 @@ use crate::state::StateStore;
 
 const GENERATION: u64 = 42;
 const MIMEAPPS: &str = "/etc/xdg/mimeapps.list";
-const SKEL_DOCK: &str = "/etc/skel/.config/crownos/dock.ron";
-const CHROMIUM_DOCK: &str = "(\n    items: [\n        \"/usr/share/applications/kitty.desktop\",\n        \"/usr/share/applications/chromium.desktop\",\n    ],\n)\n";
 const PLAYWRIGHT_BIN: &str = "/usr/lib/crownos/playwright/node_modules/.bin";
 
 fn config(browser: Browser, developer_tools: DeveloperTools) -> SetupConfig {
@@ -27,9 +25,7 @@ fn claude_code_only() -> DeveloperTools {
 }
 
 fn first_boot() -> FakeSystem {
-    FakeSystem::new()
-        .with_installed(&["chromium"])
-        .with_file(SKEL_DOCK, CHROMIUM_DOCK)
+    FakeSystem::new().with_installed(&["chromium"])
 }
 
 fn with_playwright_ready(system: FakeSystem) -> FakeSystem {
@@ -123,11 +119,9 @@ fn a_second_pass_issues_no_command_when_everything_is_done() {
     let commands = system.commands();
     assert!(commands.contains(&"pacman -Syu --needed --noconfirm -- firefox".to_owned()));
     assert!(commands.contains(&"pacman -Syu --needed --noconfirm -- claude-code".to_owned()));
-    assert!(
-        system
-            .file(SKEL_DOCK)
-            .is_some_and(|dock| dock.contains("firefox.desktop") && !dock.contains("chromium"))
-    );
+    assert!(system.file(MIMEAPPS).is_some_and(
+        |text| text.contains("text/html=firefox.desktop") && !text.contains("chromium")
+    ));
     for task in SetupTask::ALL {
         assert_eq!(status(&system, task), Some(TaskStatus::Done), "{task}");
     }
@@ -159,7 +153,6 @@ fn a_failing_install_is_recorded_and_later_tasks_still_run() {
         status(&system, SetupTask::Playwright),
         Some(TaskStatus::Done)
     );
-    assert_eq!(system.file(SKEL_DOCK).as_deref(), Some(CHROMIUM_DOCK));
     assert_eq!(system.file(MIMEAPPS), None);
 }
 
@@ -352,7 +345,6 @@ fn chrome_is_built_from_the_aur_by_the_build_user() {
             ),
             "mkdir /etc/xdg".to_owned(),
             format!("write {MIMEAPPS}"),
-            format!("write {SKEL_DOCK}"),
         ]
     );
 

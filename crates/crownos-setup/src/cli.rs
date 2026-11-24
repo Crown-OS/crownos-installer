@@ -30,8 +30,8 @@ pub enum Command {
         #[command(subcommand)]
         action: ToolsAction,
     },
-    /// Connect the coding agents of this account to CrownOS and point the dock
-    /// at the chosen browser. Runs as the user, not as root.
+    /// Connect the coding agents of this account to CrownOS. Runs as the user,
+    /// not as root.
     User {
         /// Wait until the setup is complete, then show a notification.
         #[arg(long)]

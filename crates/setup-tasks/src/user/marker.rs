@@ -1,5 +1,5 @@
-//! `$XDG_STATE_HOME/crownos/setup/user.ron`: the generations for which the
-//! dock step and the notification are done.
+//! `$XDG_STATE_HOME/crownos/setup/user.ron`: the generation for which the
+//! notification is done.
 
 use std::path::Path;
 
@@ -12,7 +12,6 @@ use crate::utils::home_file;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct UserMarker {
-    pub dock_generation: u64,
     pub notified_generation: u64,
 }
 
@@ -30,15 +29,12 @@ impl UserMarker {
 
     pub fn store(&self, system: &dyn System, path: &Path) -> Result<(), TaskError> {
         let Self {
-            dock_generation,
             notified_generation,
         } = self;
         home_file::write(
             system,
             path,
-            &format!(
-                "(dock_generation: {dock_generation}, notified_generation: {notified_generation})\n"
-            ),
+            &format!("(notified_generation: {notified_generation})\n"),
         )
     }
 }
@@ -54,7 +50,6 @@ mod tests {
     fn a_stored_marker_loads_back() {
         let system = FakeSystem::new();
         let marker = UserMarker {
-            dock_generation: 7,
             notified_generation: 5,
         };
         marker.store(&system, Path::new(PATH)).expect("stores");
@@ -62,8 +57,20 @@ mod tests {
     }
 
     #[test]
+    fn a_marker_of_the_old_format_keeps_its_notified_generation() {
+        let system =
+            FakeSystem::new().with_file(PATH, "(dock_generation: 7, notified_generation: 5)\n");
+        assert_eq!(
+            UserMarker::load(&system, Path::new(PATH)),
+            UserMarker {
+                notified_generation: 5
+            }
+        );
+    }
+
+    #[test]
     fn a_missing_or_broken_marker_is_zero() {
-        let system = FakeSystem::new().with_file(PATH, "(dock_generation: soon)");
+        let system = FakeSystem::new().with_file(PATH, "(notified_generation: soon)");
         assert_eq!(
             UserMarker::load(&system, Path::new(PATH)),
             UserMarker::default()

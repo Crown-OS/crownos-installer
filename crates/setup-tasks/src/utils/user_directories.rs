@@ -30,10 +30,6 @@ impl UserDirectories {
         self.state_home.join("crownos/setup/user.ron")
     }
 
-    pub fn dock_file(&self) -> PathBuf {
-        self.config_home.join("crownos/dock.ron")
-    }
-
     pub fn visual_context_file(&self) -> PathBuf {
         self.config_home.join("crownos/visual_context.ron")
     }
@@ -67,8 +63,8 @@ mod tests {
             Some("/srv/state".into()),
         );
         assert_eq!(
-            directories.dock_file(),
-            PathBuf::from("/srv/config/crownos/dock.ron")
+            directories.visual_context_file(),
+            PathBuf::from("/srv/config/crownos/visual_context.ron")
         );
         assert_eq!(
             directories.marker_file(),

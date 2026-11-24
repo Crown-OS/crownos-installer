@@ -102,17 +102,12 @@ mod tests {
 
     use super::*;
 
-    const DOCK: &str = "/etc/skel/.config/crownos/dock.ron";
     const PLAYWRIGHT_BIN: &str = "/usr/lib/crownos/playwright/node_modules/.bin";
     const CODEX_CONFIG: &str = "(browser: Chromium, developer_tools: (codex: true))";
 
     fn ready_system() -> FakeSystem {
         FakeSystem::new()
             .with_installed(&["chromium"])
-            .with_file(
-                DOCK,
-                "(items: [\"/usr/share/applications/chromium.desktop\"])",
-            )
             .with_file("/usr/bin/node", "")
             .with_file("/usr/bin/npm", "")
             .with_file(format!("{PLAYWRIGHT_BIN}/playwright-mcp"), "")

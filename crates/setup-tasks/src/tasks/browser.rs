@@ -1,6 +1,6 @@
-//! Installs the chosen web browser and makes it the default for each new
-//! account. The defaults change only after the install succeeded, so that the
-//! dock never points at a missing browser.
+//! Installs the chosen web browser and makes it the default web browser of the
+//! system. The defaults change only after the install succeeded, so that they
+//! never point at a missing browser.
 
 use std::path::Path;
 
@@ -8,11 +8,10 @@ use crownos_config::system::{PackageSource, SetupConfig, SetupTask};
 
 use super::{Context, SetupTaskRunner, aur};
 use crate::error::TaskError;
-use crate::utils::{dock, mimeapps, pacman};
+use crate::utils::{mimeapps, pacman};
 
 const MIMEAPPS_PATH: &str = "/etc/xdg/mimeapps.list";
 const MIMEAPPS_DIRECTORY: &str = "/etc/xdg";
-const SKEL_DOCK_PATH: &str = "/etc/skel/.config/crownos/dock.ron";
 const SYSTEM_FILE_MODE: u32 = 0o644;
 const SYSTEM_DIRECTORY_MODE: u32 = 0o755;
 
@@ -40,12 +39,10 @@ impl SetupTaskRunner for BrowserTask {
         let mimeapps_text = system
             .read_file(Path::new(MIMEAPPS_PATH))?
             .unwrap_or_default();
-        if !mimeapps::has_defaults(&mimeapps_text, &mimeapps::defaults_for(browser)) {
-            return Ok(false);
-        }
-        Ok(system
-            .read_file(Path::new(SKEL_DOCK_PATH))?
-            .is_none_or(|dock_text| dock::replace_browser(&dock_text, browser).is_none()))
+        Ok(mimeapps::has_defaults(
+            &mimeapps_text,
+            &mimeapps::defaults_for(browser),
+        ))
     }
 
     fn run(&self, context: &Context) -> Result<(), TaskError> {
@@ -69,13 +66,6 @@ impl SetupTaskRunner for BrowserTask {
                 &mimeapps::set_defaults(&mimeapps_text, &defaults),
                 SYSTEM_FILE_MODE,
             )?;
-        }
-
-        let dock_path = Path::new(SKEL_DOCK_PATH);
-        if let Some(dock_text) = system.read_file(dock_path)?
-            && let Some(edited_dock) = dock::replace_browser(&dock_text, browser)
-        {
-            system.write_file(dock_path, &edited_dock, SYSTEM_FILE_MODE)?;
         }
         Ok(())
     }

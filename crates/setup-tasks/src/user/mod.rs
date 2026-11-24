@@ -3,7 +3,6 @@
 //! the network.
 
 pub mod accessibility_flags;
-pub mod dock;
 pub mod marker;
 pub mod notification;
 pub mod snapshot;

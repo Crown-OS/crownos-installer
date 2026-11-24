@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{SetupSnapshot, accessibility_flags, dock};
+use super::{SetupSnapshot, accessibility_flags};
 use crate::agents::playwright_cli::{self, ConfigurationChange};
 use crate::agents::{self, skills};
 use crate::context::System;
@@ -28,7 +28,6 @@ pub struct UserSetupReport {
     /// after it ran.
     pub failed: Vec<(PathBuf, TaskError)>,
     pub playwright_configured: bool,
-    pub dock_changed: bool,
     /// The browser and Electron flags files that the run changed.
     pub accessibility_flags_changed: Vec<PathBuf>,
 }
@@ -72,9 +71,8 @@ impl UserSetupReport {
 }
 
 /// Links the skills and adds the MCP servers for each agent on the account,
-/// sets the browser of `playwright-cli` when it is installed, points the dock
-/// at the browser one time for each generation, and makes the browser and
-/// Electron flags files follow `visual_context.enabled`. A second run changes
+/// sets the browser of `playwright-cli` when it is installed, and makes the
+/// browser and Electron flags files follow `visual_context.enabled`. A second run changes
 /// nothing. A step that fails does not stop the steps after it.
 pub fn wire(
     system: &dyn System,
@@ -135,14 +133,6 @@ pub fn wire(
         }
     }
 
-    match dock::update_once(system, directories, snapshot) {
-        Ok(changed) => report.dock_changed = changed,
-        Err(TaskError::SymbolicLink(path)) => {
-            report.skipped.push((path, SkipReason::SymbolicLink));
-        }
-        Err(error) => report.failed.push((directories.dock_file(), error)),
-    }
-
     update_accessibility_flags(system, directories, &mut report);
     report
 }
@@ -174,8 +164,6 @@ mod tests {
     use crate::user::snapshot::tests::state;
 
     const PLAYWRIGHT_CLI: &str = "/usr/lib/crownos/playwright/node_modules/.bin/playwright-cli";
-    const DOCK: &str = "/home/ada/.config/crownos/dock.ron";
-    const CHROMIUM_DOCK: &str = "(items: [\"/usr/share/applications/chromium.desktop\"])";
     const SKILL: &str = "/usr/share/crownos/skills/computer-use";
 
     fn directories() -> UserDirectories {
@@ -194,12 +182,13 @@ mod tests {
     }
 
     #[test]
-    fn an_account_without_agents_and_playwright_gets_only_the_dock() {
-        let system = FakeSystem::new().with_file(DOCK, CHROMIUM_DOCK);
+    fn an_account_without_agents_and_playwright_changes_nothing() {
+        let system = FakeSystem::new();
         let report = wire(&system, &directories(), &done_snapshot(Browser::Firefox));
-        assert!(report.dock_changed);
         assert!(report.linked.is_empty() && report.merged.is_empty() && report.skipped.is_empty());
         assert!(report.failed.is_empty() && !report.playwright_configured);
+        assert!(report.accessibility_flags_changed.is_empty());
+        assert!(system.journal().is_empty(), "{:?}", system.journal());
     }
 
     #[test]
@@ -251,8 +240,7 @@ mod tests {
         let system = with_every_server_command(FakeSystem::new())
             .with_program("codex")
             .with_directory(SKILL)
-            .with_racing_link("/home/ada/.agents/skills/computer-use", "/opt/other")
-            .with_file(DOCK, CHROMIUM_DOCK);
+            .with_racing_link("/home/ada/.agents/skills/computer-use", "/opt/other");
         let report = wire(&system, &directories(), &done_snapshot(Browser::Brave));
         assert_eq!(report.failed.len(), 1);
         assert_eq!(
@@ -260,7 +248,6 @@ mod tests {
             PathBuf::from("/home/ada/.agents/skills")
         );
         assert_eq!(report.merged.len(), 3);
-        assert!(report.dock_changed);
     }
 
     #[test]
@@ -312,28 +299,21 @@ mod tests {
 
     #[test]
     fn a_linked_file_is_skipped_as_a_symbolic_link() {
-        let linked_dock = "/home/ada/dotfiles/dock.ron";
         let system = FakeSystem::new()
             .with_program("codex")
             .with_file("/home/ada/dotfiles/config.toml", "")
             .with_link(
                 "/home/ada/.codex/config.toml",
                 "/home/ada/dotfiles/config.toml",
-            )
-            .with_file(linked_dock, CHROMIUM_DOCK)
-            .with_link(DOCK, linked_dock);
+            );
         let report = wire(&system, &directories(), &done_snapshot(Browser::Brave));
         assert_eq!(
             report.skipped,
-            [
-                (
-                    PathBuf::from("/home/ada/.codex/config.toml"),
-                    SkipReason::SymbolicLink
-                ),
-                (PathBuf::from(DOCK), SkipReason::SymbolicLink),
-            ]
+            [(
+                PathBuf::from("/home/ada/.codex/config.toml"),
+                SkipReason::SymbolicLink
+            )]
         );
         assert!(report.failed.is_empty(), "{:?}", report.failed);
-        assert_eq!(system.file(linked_dock).as_deref(), Some(CHROMIUM_DOCK));
     }
 }
