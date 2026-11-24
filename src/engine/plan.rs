@@ -3612,8 +3612,8 @@ mod tests {
             "Server = https://repo.crownos.org/v0.1.12/$arch",
             "crownos-updated.service",
             "%wheel ALL=(ALL:ALL) ALL",
-            "arch-chroot /mnt systemctl preset -- <the enable lines of /usr/lib/systemd/system-preset/80-crownos.preset",
-            "else NetworkManager.service systemd-timesyncd.service",
+            "arch-chroot /mnt systemctl preset -- <the enable lines of /usr/lib/systemd/system-preset/80-crownos.preset>",
+            "or systemctl enable NetworkManager.service systemd-timesyncd.service",
             "snapper-cleanup.timer",
             "> /mnt/var/lib/crownos/update/applied-presets",
         ] {

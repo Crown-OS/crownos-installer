@@ -203,9 +203,9 @@ pub fn add_crownos_repository(root: &str, channel: &str) -> Vec<Cmd> {
     ]
 }
 
-/// `systemctl preset` for the units of [`CROWNOS_PRESET`] in `root`, or for
-/// [`SERVICES`] when the file is missing, and the record of them for
-/// crownos-updated.
+/// `systemctl preset` for the units of [`CROWNOS_PRESET`] in `root`, or
+/// `systemctl enable` for [`SERVICES`] when the file is missing, and the
+/// record of them for crownos-updated.
 pub fn enable_preset_services(root: &str) -> Cmd {
     Cmd::PresetUnits {
         root: root.to_owned(),

@@ -150,8 +150,9 @@ pub enum Cmd {
     /// Used to take a backup we may not need.
     CopyIfPresent { from: String, to: String },
     /// `systemctl preset` inside `root` for the units of the `enable` lines of
-    /// `preset`, or for `fallback_units` when `root` has no `preset`. The
-    /// units are then written to `record`, one on each line.
+    /// `preset`. When `root` has no `preset`, `systemctl enable` for
+    /// `fallback_units`: `preset` would apply the `disable *` of systemd's own
+    /// preset file. The units are then written to `record`, one on each line.
     PresetUnits {
         root: String,
         preset: String,
@@ -226,8 +227,8 @@ impl fmt::Display for Cmd {
                 record,
             } => write!(
                 f,
-                "arch-chroot {root} systemctl preset -- <the enable lines of {preset}, \
-                 else {}> and the same units > {root}{record}",
+                "arch-chroot {root} systemctl preset -- <the enable lines of {preset}>, \
+                 or systemctl enable {} without {preset}; the same units > {root}{record}",
                 fallback_units.join(" ")
             ),
             Self::MakeDirs { path } => write!(f, "mkdir -p {path}"),
@@ -358,14 +359,14 @@ fn preset_units(
     } else {
         None
     };
-    let units: Vec<&str> = match &preset_text {
-        Some(text) => preset::enabled_units(text).collect(),
-        None => borrow(fallback_units),
+    let (operation, units): (&str, Vec<&str>) = match &preset_text {
+        Some(text) => ("preset", preset::enabled_units(text).collect()),
+        None => ("enable", borrow(fallback_units)),
     };
     let output = if units.is_empty() {
         format!("{preset_path} enables no unit")
     } else {
-        let mut args = vec![root, "systemctl", "preset", "--"];
+        let mut args = vec![root, "systemctl", operation, "--"];
         args.extend(&units);
         system.run("arch-chroot", &args)?
     };
@@ -1063,12 +1064,21 @@ mod tests {
         );
 
         let fallback = format!(
-            "arch-chroot /mnt systemctl preset -- {}",
+            "arch-chroot /mnt systemctl enable -- {}",
             base::SERVICES.join(" ")
         );
         let without_preset = fixture::FakeSystem::new().with_command(&fallback, "");
         command.apply(&without_preset).expect("apply");
-        assert_eq!(without_preset.journal().first(), Some(&fallback));
+        assert_eq!(
+            without_preset.journal(),
+            [
+                fallback,
+                format!(
+                    "write /mnt/var/lib/crownos/update/applied-presets ({} bytes)",
+                    preset::applied_presets_record(base::SERVICES.iter().copied()).len()
+                ),
+            ]
+        );
     }
 
     /// A committing run against the fake system, to prove the command paths
