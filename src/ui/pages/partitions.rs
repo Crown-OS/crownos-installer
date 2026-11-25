@@ -163,7 +163,7 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
         format!("{disk_path} — nothing is written until the install runs."),
     )
     .content(content)
-    .actions((
+    .leading(
         wizard_pill(
             wizard,
             "Discard changes",
@@ -171,7 +171,12 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
             Wizard::discard_partition_edits,
         )
         .disabled(bind(move |runtime| queued.get(runtime) == 0)),
-        wizard_pill(wizard, "Done", ButtonVariant::Primary, Wizard::retreat),
+    )
+    .actions(wizard_pill(
+        wizard,
+        "Done",
+        ButtonVariant::Primary,
+        Wizard::retreat,
     ))
 }
 

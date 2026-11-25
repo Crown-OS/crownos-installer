@@ -1,11 +1,10 @@
 //! A thin bar that fills smoothly towards a fraction.
 
-use crownui::prelude::{Color, Memo, Role, Semantic, Spring, Styled, View, bind, rgb, vstack};
+use crownui::prelude::{Memo, Role, Semantic, Spring, Styled, View, WHITE, bind, vstack};
 
-use crate::ui::palette::BRAND;
+use crate::ui::palette::TROUGH;
 
 const HEIGHT: f32 = 8.0;
-const TRACK: Color = rgb(0xf2f2f6);
 
 /// A bar `fraction` full, spoken as a percentage and named `name`.
 pub fn meter(name: &'static str, fraction: Memo<f32>) -> impl View + Styled {
@@ -14,7 +13,7 @@ pub fn meter(name: &'static str, fraction: Memo<f32>) -> impl View + Styled {
             .absolute()
             .inset(0.0)
             .rounded(HEIGHT / 2.0)
-            .bg(BRAND)
+            .bg(WHITE)
             .origin(0.0, 0.5)
             .scale_x(bind(move |runtime| fraction.get(runtime).clamp(0.0, 1.0)))
             .transition(Spring::smooth()),
@@ -24,7 +23,7 @@ pub fn meter(name: &'static str, fraction: Memo<f32>) -> impl View + Styled {
     .w_full()
     .rounded(HEIGHT / 2.0)
     .overflow_hidden()
-    .bg(TRACK)
+    .bg(TROUGH)
     .role(Role::ProgressBar)
     .label(name)
     .value(bind(move |runtime| percent(fraction.get(runtime))))

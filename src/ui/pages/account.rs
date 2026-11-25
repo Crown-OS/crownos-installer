@@ -7,13 +7,15 @@
 use crownui::kit::{ButtonVariant, TextInputOptions, text_input};
 use crownui::prelude::{Cx, Listeners, Semantic, Signal, Styled, View, bind, keyed, vstack};
 
-use crate::ui::components::{Tone, alert, field};
+use crate::ui::components::{Tone, alert, field, glyph};
 use crate::ui::layout::{BLOCK_GAP, PageParts, back_pill, nothing, wizard_pill};
 use crate::ui::{Form, Wizard};
 use crate::util::mirror::mirror;
 
 const FIELD_GAP_X: f32 = 24.0;
-const FIELD_GAP_Y: f32 = 20.0;
+const FIELD_GAP_Y: f32 = 22.0;
+/// Two of the design's 520px fields side by side.
+const FORM_WIDTH: f32 = 1064.0;
 
 /// Which [`Form`] field an input edits, and whether the plan depends on it.
 pub struct FormField {
@@ -75,7 +77,7 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
     let subtitle = if auto {
         "Only the password is asked here; the rest came from Windows."
     } else {
-        "Create your account"
+        "Create the account you will sign in with."
     };
 
     let fields: Vec<_> = FIELDS
@@ -105,19 +107,25 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
         .w_full();
 
     PageParts::new("Let's get you started", subtitle)
-        .content(vstack((form, problem)).gap(BLOCK_GAP))
-        .actions((
-            back_pill(wizard),
+        .content(
+            vstack((form, problem))
+                .gap(BLOCK_GAP)
+                .w_full()
+                .max_w(FORM_WIDTH)
+                .self_center(),
+        )
+        .leading(back_pill(wizard))
+        .actions(
             wizard_pill(
                 wizard,
-                "Next",
+                "Continue",
                 ButtonVariant::Primary,
                 Wizard::submit_account,
             )
             .disabled(bind(move |runtime| {
                 wizard.with(runtime, |wizard| wizard.form.problem().is_some())
             })),
-        ))
+        )
 }
 
 fn input(cx: &mut Cx, wizard: Signal<Wizard>, form_field: &'static FormField) -> impl View + use<> {
@@ -140,5 +148,9 @@ fn input(cx: &mut Cx, wizard: Signal<Wizard>, form_field: &'static FormField) ->
     } else {
         entry
     };
-    field(form_field.name, entry)
+    field(
+        form_field.name,
+        entry,
+        form_field.secret.then_some(glyph::LOCK),
+    )
 }

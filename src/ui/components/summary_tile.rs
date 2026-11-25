@@ -1,26 +1,23 @@
-//! A fact about the install: an icon tile, what it is, and its value.
+//! A fact about the install: an icon tile, what it is, and its value, on a
+//! glass pill.
 
 use crownui::kit::icon_colored;
-use crownui::prelude::{
-    Color, Role, Semantic, Styled, View, WHITE, hstack, rgb, rgba, text, vstack,
-};
+use crownui::prelude::{Color, Role, Semantic, Styled, View, hstack, rgb, text, vstack};
+
+use crate::ui::palette::{FOREGROUND, GLASS, HAIRLINE, SECONDARY, TILE};
 
 const HEIGHT: f32 = 72.0;
-const RADIUS: f32 = 14.0;
-const PADDING: f32 = 14.0;
-const TILE: f32 = 44.0;
-const TILE_RADIUS: f32 = 11.0;
-const ICON: f32 = 22.0;
+const PADDING_LEFT: f32 = 14.0;
+const PADDING_RIGHT: f32 = 28.0;
+const TILE_SIZE: f32 = 44.0;
+const ICON: f32 = 20.0;
 const ICON_STROKE: f32 = 1.8;
 const TEXT_GAP: f32 = 14.0;
-const LINE_GAP: f32 = 3.0;
-const TITLE_SIZE: f32 = 15.0;
+const LINE_GAP: f32 = 2.0;
+const TITLE_SIZE: f32 = 16.0;
+const TITLE_TRACKING: f32 = -0.16;
 const VALUE_SIZE: f32 = 13.0;
-const TILE_FILL: Color = rgb(0xf2f2f6);
-const ICON_COLOR: Color = rgb(0x78768a);
-const PRIMARY: Color = rgb(0x17151f);
-const MUTED: Color = rgb(0x8b8996);
-const HAIRLINE: Color = rgba(0x1b1b2a12);
+const ICON_COLOR: Color = rgb(0xd4d4d8);
 
 /// `title` reading `value`, beside `glyph`.
 pub fn summary_tile(
@@ -31,31 +28,35 @@ pub fn summary_tile(
     let value = value.into();
     hstack((
         vstack(icon_colored(glyph, ICON_STROKE, |_| ICON_COLOR).size(ICON))
-            .size(TILE)
+            .size(TILE_SIZE)
             .shrink(0.0)
             .items_center()
             .justify_center()
-            .rounded(TILE_RADIUS)
-            .bg(TILE_FILL),
+            .rounded(TILE_SIZE / 2.0)
+            .bg(TILE),
         vstack((
             text(title)
                 .text_size(TITLE_SIZE)
-                .text_color(PRIMARY)
+                .font_medium()
+                .tracking(TITLE_TRACKING)
+                .text_color(FOREGROUND)
                 .truncate(),
             text(value.clone())
                 .text_size(VALUE_SIZE)
-                .text_color(MUTED)
+                .text_color(SECONDARY)
                 .truncate(),
         ))
         .gap(LINE_GAP)
         .ml(TEXT_GAP)
-        .flex_1(),
+        .flex_1()
+        .min_w(0.0),
     ))
     .items_center()
     .h(HEIGHT)
-    .px(PADDING)
-    .rounded(RADIUS)
-    .bg(WHITE)
+    .pl(PADDING_LEFT)
+    .pr(PADDING_RIGHT)
+    .rounded(HEIGHT / 2.0)
+    .bg(GLASS)
     .border(1.0)
     .border_color(HAIRLINE)
     .role(Role::Group)

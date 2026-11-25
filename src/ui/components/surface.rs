@@ -1,23 +1,23 @@
-//! The white, hairlined panel that groups content on the card.
+//! The glass panel that groups content on a page.
 
-use crownui::prelude::{Styled, View, ViewSeq, WHITE, vstack};
+use crownui::prelude::{Styled, View, ViewSeq, vstack};
 
-use crate::ui::palette::OUTLINE;
+use crate::ui::palette::{GLASS, HAIRLINE};
 
-const PADDING: f32 = 20.0;
-const RADIUS: f32 = 16.0;
+const PADDING: f32 = 24.0;
+const RADIUS: f32 = 32.0;
 const GAP: f32 = 14.0;
 
-/// `content` stacked on a white panel the width of the column.
+/// `content` stacked on a glass panel the width of the column.
 pub fn surface(content: impl ViewSeq) -> impl View + Styled {
     vstack(content)
         .gap(GAP)
         .p(PADDING)
         .w_full()
         .rounded(RADIUS)
-        .bg(WHITE)
+        .bg(GLASS)
         .border(1.0)
-        .border_color(OUTLINE)
+        .border_color(HAIRLINE)
 }
 
 #[cfg(test)]

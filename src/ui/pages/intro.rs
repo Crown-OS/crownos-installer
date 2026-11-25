@@ -1,46 +1,37 @@
-//! ISO flow only: the first thing on screen, before the card. Installing is
+//! ISO flow only: the first thing on screen, before the steps. Installing is
 //! the way in. Trying CrownOS without installing hands the screen to the
 //! image's live desktop.
 
 use crownui::ext::{Key, NamedKey};
 use crownui::prelude::{
-    Color, CursorIcon, Listeners, Role, Semantic, Shadow, Signal, Spring, Styled, Vector, View,
-    WHITE, hstack, rgba, svg, text, vstack,
+    Color, CursorIcon, Listeners, Role, Semantic, Signal, Spring, Styled, View, hstack, rgba, text,
+    vstack,
 };
 
 use crate::ui::Wizard;
-use crate::ui::components::{Emphasis, choice_panel};
-use crate::ui::layout::nothing;
-use crate::ui::palette::{BRAND, INK, SUBDUED};
+use crate::ui::components::{Emphasis, choice_panel, glyph};
+use crate::ui::palette::{FOREGROUND, SUBDUED};
 
-const CONTENT_WIDTH: f32 = 1100.0;
-const TITLE_SIZE: f32 = 48.0;
-const SUBTITLE_SIZE: f32 = 24.0;
-const COPY_GAP: f32 = 14.0;
-const COPY_TO_TRAY: f32 = 40.0;
-const TRAY_RADIUS: f32 = 28.0;
-const TRAY_INSET: f32 = 10.0;
-const TRAY_FILL: Color = rgba(0xffffffb3);
-const TRAY_BLUR: f32 = 12.0;
-const TRAY_SHADOW: Color = rgba(0x25171a14);
-const TRAY_SHADOW_BLUR: f32 = 20.0;
-const TRAY_SHADOW_OFFSET: f32 = 4.0;
-const INSTALL_MARK_GAP: f32 = 8.0;
-const RADIO_SIZE: f32 = 22.0;
-const RADIO_RING: f32 = 2.0;
-const RADIO_GAP: f32 = 16.0;
+const CONTENT_WIDTH: f32 = 1120.0;
+const TITLE_SIZE: f32 = 64.0;
+const TITLE_TRACKING: f32 = -1.28;
+const TITLE_COLOR: Color = rgba(0xfffffff2);
+const SUBTITLE_SIZE: f32 = 30.0;
+const SUBTITLE_TRACKING: f32 = -0.45;
+const COPY_GAP: f32 = 16.0;
+const COPY_TO_CHOICES: f32 = 40.0;
+const CHOICE_GAP: f32 = 24.0;
 const HOVER_SCALE: f32 = 1.01;
 const PRESSED_SCALE: f32 = 0.99;
 const ENTER_LIFT: f32 = 12.0;
+const FOCUS_RING: f32 = 2.0;
 
 const INSTALL_ART: &[u8] = include_bytes!("../../../assets/intro/install.png");
 const TRY_ART: &[u8] = include_bytes!("../../../assets/intro/try.png");
-const INSTALL_MARK: &str = include_str!("../../../assets/intro/install.svg");
-const GO_MARK: &str = include_str!("../../../assets/intro/go.svg");
 
 pub fn build(wizard: Signal<Wizard>) -> impl View + Styled {
-    vstack((heading(), tray(wizard)))
-        .gap(COPY_TO_TRAY)
+    vstack((heading(), choices(wizard)))
+        .gap(COPY_TO_CHOICES)
         .items_center()
         .w_full()
         .max_w(CONTENT_WIDTH)
@@ -50,47 +41,41 @@ pub fn build(wizard: Signal<Wizard>) -> impl View + Styled {
 
 fn heading() -> impl View {
     vstack((
-        text("Welcome to CrownOS")
+        text("Welcome")
             .text_size(TITLE_SIZE)
-            .font_semibold()
-            .text_color(INK)
+            .font_medium()
+            .tracking(TITLE_TRACKING)
+            .text_color(TITLE_COLOR)
             .role(Role::Heading),
-        text("Choose how you want to experience it today.")
+        text("How would you like to start?")
             .text_size(SUBTITLE_SIZE)
+            .font_medium()
+            .tracking(SUBTITLE_TRACKING)
             .text_color(SUBDUED),
     ))
     .gap(COPY_GAP)
     .items_center()
 }
 
-fn tray(wizard: Signal<Wizard>) -> impl View {
+fn choices(wizard: Signal<Wizard>) -> impl View {
     hstack((install(wizard), try_it_out(wizard)))
-        .gap(TRAY_INSET)
-        .p(TRAY_INSET)
+        .gap(CHOICE_GAP)
         .w_full()
-        .rounded(TRAY_RADIUS)
-        .bg(TRAY_FILL)
-        .backdrop_blur(TRAY_BLUR)
-        .shadow(Shadow::new(
-            TRAY_SHADOW,
-            TRAY_SHADOW_BLUR,
-            Vector::new(TRAY_SHADOW_OFFSET, TRAY_SHADOW_OFFSET),
-        ))
 }
 
 fn install(wizard: Signal<Wizard>) -> impl View {
     choice_panel(
         INSTALL_ART,
-        svg(INSTALL_MARK).mr(INSTALL_MARK_GAP),
-        "Install",
+        glyph::ARROW_SQUARE_DOWN,
+        "Install CrownOS",
         "Set up CrownOS on this device and get started with the full experience.",
-        svg(GO_MARK).shrink(0.0),
         Emphasis::Chosen,
     )
     .role(Role::Button)
-    .label("Install")
+    .label("Install CrownOS")
     .focusable(true)
     .cursor(CursorIcon::Pointer)
+    .focus_visible(|style| style.ring(FOCUS_RING, FOREGROUND))
     .on_click(move |cx, _| wizard.update(cx, Wizard::advance))
     .on_key_down(move |cx, event| {
         if matches!(
@@ -106,26 +91,18 @@ fn install(wizard: Signal<Wizard>) -> impl View {
 }
 
 fn try_it_out(wizard: Signal<Wizard>) -> impl View {
-    let radio = vstack(())
-        .size(RADIO_SIZE)
-        .shrink(0.0)
-        .rounded(RADIO_SIZE / 2.0)
-        .bg(WHITE)
-        .border(RADIO_RING)
-        .border_color(BRAND)
-        .mr(RADIO_GAP);
     choice_panel(
         TRY_ART,
-        radio,
+        glyph::MONITOR,
         "Try it out",
         "Explore CrownOS without installing it. It’s perfect for a quick look around.",
-        nothing(),
         Emphasis::Resting,
     )
     .role(Role::Button)
     .label("Try it out")
     .focusable(true)
     .cursor(CursorIcon::Pointer)
+    .focus_visible(|style| style.ring(FOCUS_RING, FOREGROUND))
     .on_click(move |cx, _| wizard.update(cx, Wizard::try_live))
     .on_key_down(move |cx, event| {
         if matches!(

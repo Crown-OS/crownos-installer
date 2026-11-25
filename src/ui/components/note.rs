@@ -1,25 +1,23 @@
 //! A line the user should read: an icon in the tone's colour, then the
-//! message, on a white strip — or, for something that stopped the install,
-//! a titled block on blush.
+//! message, on a glass strip — or, for something that stopped the install,
+//! a titled block with a rim in the tone's colour.
 
 use crownui::kit::{icon_colored, icons};
-use crownui::prelude::{
-    Color, IntoProp, Role, Semantic, Styled, View, WHITE, hstack, rgb, text, vstack,
-};
+use crownui::prelude::{Color, IntoProp, Role, Semantic, Styled, View, hstack, rgb, text, vstack};
 
-use crate::ui::palette::{BLUSH, BRAND, INK, OUTLINE};
+use crate::ui::palette::{DANGER, FOREGROUND, GLASS, GLASS_LIT, HAIRLINE, SECONDARY};
 
 const ICON_SIZE: f32 = 16.0;
 const ICON_STROKE: f32 = 2.0;
-const GAP: f32 = 10.0;
-const PADDING_X: f32 = 16.0;
-const PADDING_Y: f32 = 12.0;
-const RADIUS: f32 = 14.0;
-const MESSAGE_SIZE: f32 = 13.0;
-const TITLE_SIZE: f32 = 15.0;
+const GAP: f32 = 12.0;
+const PADDING_X: f32 = 22.0;
+const PADDING_Y: f32 = 14.0;
+const RADIUS: f32 = 26.0;
+const MESSAGE_SIZE: f32 = 14.0;
+const TITLE_SIZE: f32 = 16.0;
 const DETAIL_GAP: f32 = 4.0;
-const BODY: Color = rgb(0x403e4a);
-const DANGER: Color = rgb(0xc22727);
+const CAUTION: Color = rgb(0xffc56b);
+const RIM_ALPHA: f32 = 0.45;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
@@ -42,7 +40,8 @@ impl Tone {
 
     fn color(self) -> Color {
         match self {
-            Self::Info | Self::Caution => BRAND,
+            Self::Info => FOREGROUND,
+            Self::Caution => CAUTION,
             Self::Danger => DANGER,
         }
     }
@@ -54,7 +53,7 @@ pub fn note(tone: Tone, message: impl IntoProp<String>) -> impl View + Styled {
         glyph(tone),
         text(message)
             .text_size(MESSAGE_SIZE)
-            .text_color(BODY)
+            .text_color(SECONDARY)
             .flex_1(),
     ))
     .gap(GAP)
@@ -63,9 +62,9 @@ pub fn note(tone: Tone, message: impl IntoProp<String>) -> impl View + Styled {
     .py(PADDING_Y)
     .w_full()
     .rounded(RADIUS)
-    .bg(WHITE)
+    .bg(GLASS)
     .border(1.0)
-    .border_color(OUTLINE)
+    .border_color(HAIRLINE)
     .role(Role::Group)
 }
 
@@ -81,9 +80,9 @@ pub fn alert(
         vstack((
             text(title.clone())
                 .text_size(TITLE_SIZE)
-                .font_semibold()
-                .text_color(INK),
-            text(detail).text_size(MESSAGE_SIZE).text_color(BODY),
+                .font_medium()
+                .text_color(FOREGROUND),
+            text(detail).text_size(MESSAGE_SIZE).text_color(SECONDARY),
         ))
         .gap(DETAIL_GAP)
         .flex_1(),
@@ -94,9 +93,9 @@ pub fn alert(
     .py(PADDING_Y + 2.0)
     .w_full()
     .rounded(RADIUS)
-    .bg(if tone == Tone::Danger { BLUSH } else { WHITE })
+    .bg(GLASS_LIT)
     .border(1.0)
-    .border_color(tone.color().with_alpha_factor(0.35))
+    .border_color(tone.color().with_alpha_factor(RIM_ALPHA))
     .role(Role::Group)
     .label(title)
     .enter(|style| style.opacity(0.0).translate_y(-6.0))

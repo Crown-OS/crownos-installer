@@ -6,16 +6,16 @@ use crate::provenance::Provenance;
 /// than the ISO flow's: Welcome stands in for the two questions the payload
 /// already answered.
 pub const WINDOWS_STEPS: &[&str] = &[
-    "Welcome", "Network", "Account", "Apps", "Confirm", "Install",
+    "Welcome", "Network", "Account", "Apps", "AI", "Confirm", "Install",
 ];
 /// And for an install from a flashed image.
 pub const ISO_STEPS: &[&str] = &[
-    "Network", "Disk", "Space", "Account", "Apps", "Confirm", "Install",
+    "Network", "Disk", "Space", "Account", "Apps", "AI", "Confirm", "Install",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
-    /// ISO flow only: install or try, before the card. Not a step.
+    /// ISO flow only: install or try, before the steps. Not a step.
     Intro,
     /// Windows flow only: what the payload decided, before doing any of it.
     Welcome,
@@ -30,6 +30,8 @@ pub enum Page {
     Account,
     /// Either flow: which apps from other systems the new install can run.
     Apps,
+    /// Either flow: how much AI the new system gets, and where it runs.
+    Ai,
     Confirm,
     Progress,
     Done,
@@ -58,8 +60,9 @@ impl Page {
                 Self::Space => 2,
                 Self::Account => 3,
                 Self::Apps => 4,
-                Self::Confirm => 5,
-                Self::Progress | Self::Done => 6,
+                Self::Ai => 5,
+                Self::Confirm => 6,
+                Self::Progress | Self::Done => 7,
             }
         } else {
             match self {
@@ -67,8 +70,9 @@ impl Page {
                 Self::Network => 1,
                 Self::Account | Self::Space => 2,
                 Self::Apps => 3,
-                Self::Confirm => 4,
-                Self::Progress | Self::Done => 5,
+                Self::Ai => 4,
+                Self::Confirm => 5,
+                Self::Progress | Self::Done => 6,
             }
         };
         (total, index.min(total.saturating_sub(1)))
@@ -86,10 +90,11 @@ impl Page {
             Self::Partitions => 5,
             Self::Account => 6,
             Self::Apps => 7,
-            Self::Confirm => 8,
-            Self::Progress => 9,
-            Self::Done => 10,
-            Self::Blocked => 11,
+            Self::Ai => 8,
+            Self::Confirm => 9,
+            Self::Progress => 10,
+            Self::Done => 11,
+            Self::Blocked => 12,
         }
     }
 

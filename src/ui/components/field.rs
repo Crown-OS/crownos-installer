@@ -1,26 +1,38 @@
-//! A captioned text field: the kit's input inside the design's pill, whose
-//! border brightens while the field has focus.
+//! A captioned text field: the kit's input inside the design's glass pill,
+//! whose rim brightens while the field has focus.
 
 use crownui::kit::{
     GradientStops, PopoverColors, TextInputKind, TextInputOptions, Theme, provide_theme, use_theme,
 };
 use crownui::prelude::{
-    Color, Element, Listeners, Semantic, Spring, Styled, TRANSPARENT, View, WHITE, bind, component,
-    text, vstack,
+    Color, Element, Listeners, Semantic, Spring, Styled, TRANSPARENT, View, bind, component,
+    hstack, icon, rgba, text, vstack,
 };
 
-use crate::ui::palette::{BRAND, INK};
+use crate::ui::palette::{GLASS, GLASS_LIT, SUBDUED};
 
 const CAPTION_SIZE: f32 = 14.0;
-const CAPTION_GAP: f32 = 8.0;
-const FIELD_HEIGHT: f32 = 47.0;
-const FIELD_INSET: f32 = 10.0;
-const BORDER: f32 = 2.0;
-const ENTRY_SIZE: f32 = 16.0;
-const RESTING_BORDER_ALPHA: f32 = 0.4;
+const CAPTION_TRACKING: f32 = -0.14;
+const CAPTION_GAP: f32 = 10.0;
+const FIELD_HEIGHT: f32 = 56.0;
+const FIELD_INSET: f32 = 24.0;
+const FIELD_INSET_BESIDE_GLYPH: f32 = 19.0;
+const GLYPH_SIZE: f32 = 18.0;
+const GLYPH_GAP: f32 = 10.0;
+const ENTRY_SIZE: f32 = 17.0;
+const FOCUSED_RIM: f32 = 1.5;
+const RESTING_RIM: f32 = 1.0;
+const FOCUSED_RIM_COLOR: Color = rgba(0xffffffb3);
+const RESTING_RIM_COLOR: Color = rgba(0xffffff1a);
+const GLYPH_COLOR: Color = rgba(0xffffffc7);
 
-/// `input` under `caption`, which also names it for screen readers.
-pub fn field(caption: &'static str, input: Element<TextInputKind>) -> impl View {
+/// `input` under `caption`, which also names it for screen readers, with
+/// `glyph` (an SVG source) at its end when there is one.
+pub fn field(
+    caption: &'static str,
+    input: Element<TextInputKind>,
+    glyph: Option<&'static str>,
+) -> impl View {
     component(move |cx| {
         let base = use_theme(cx).with_untracked(cx, |theme| *theme);
         provide_theme(cx, chromeless(base));
@@ -31,19 +43,33 @@ pub fn field(caption: &'static str, input: Element<TextInputKind>) -> impl View 
             .label(caption)
             .on_focus(move |cx, _| focused.set(cx, true))
             .on_blur(move |cx, _| focused.set(cx, false));
+        let trailing = glyph.map(|source| icon(source, GLYPH_COLOR).size(GLYPH_SIZE).shrink(0.0));
         vstack((
             text(caption)
                 .text_size(CAPTION_SIZE)
-                .font_semibold()
-                .text_color(INK),
-            vstack(entry)
+                .font_medium()
+                .tracking(CAPTION_TRACKING)
+                .text_color(SUBDUED),
+            hstack((vstack(entry).flex_1().min_w(0.0), trailing))
+                .gap(GLYPH_GAP)
+                .items_center()
                 .h(FIELD_HEIGHT)
-                .px(FIELD_INSET)
-                .justify_center()
+                .pl(FIELD_INSET)
+                .pr(if glyph.is_some() {
+                    FIELD_INSET_BESIDE_GLYPH
+                } else {
+                    FIELD_INSET
+                })
                 .rounded(FIELD_HEIGHT / 2.0)
-                .bg(WHITE)
-                .border(BORDER)
-                .border_color(bind(move |runtime| border_color(focused.get(runtime))))
+                .bg(bind(move |runtime| {
+                    if focused.get(runtime) {
+                        GLASS_LIT
+                    } else {
+                        GLASS
+                    }
+                }))
+                .border(bind(move |runtime| rim(focused.get(runtime)).0))
+                .border_color(bind(move |runtime| rim(focused.get(runtime)).1))
                 .transition(Spring::snappy()),
         ))
         .gap(CAPTION_GAP)
@@ -51,11 +77,12 @@ pub fn field(caption: &'static str, input: Element<TextInputKind>) -> impl View 
     })
 }
 
-fn border_color(focused: bool) -> Color {
+/// The rim's width and colour.
+fn rim(focused: bool) -> (f32, Color) {
     if focused {
-        BRAND
+        (FOCUSED_RIM, FOCUSED_RIM_COLOR)
     } else {
-        BRAND.with_alpha_factor(RESTING_BORDER_ALPHA)
+        (RESTING_RIM, RESTING_RIM_COLOR)
     }
 }
 
@@ -89,7 +116,12 @@ mod tests {
                 provide_theme(cx, oobe_theme());
                 let name = cx.signal(String::new());
                 column((
-                    hstack(field("Username", text_input(name).placeholder("crown"))).w(410.0),
+                    hstack(field(
+                        "Username",
+                        text_input(name).placeholder("crown"),
+                        None,
+                    ))
+                    .w(520.0),
                     text(bind(move |runtime| format!("typed: {}", name.get(runtime)))),
                 ))
             }),
@@ -115,13 +147,13 @@ mod tests {
     }
 
     #[test]
-    fn focusing_the_field_brightens_its_border() {
-        assert_eq!(border_color(true), BRAND);
-        assert!(border_color(false).a < BRAND.a);
+    fn focusing_the_field_brightens_its_rim() {
+        assert!(rim(true).0 > rim(false).0);
+        assert!(rim(true).1.a > rim(false).1.a);
         let mut app = form();
         app.focus(role(Role::TextField).name("Username"));
         app.advance_ms(16);
-        assert!(app.is_animating(), "the border eases to the brand colour");
+        assert!(app.is_animating(), "the rim eases brighter");
     }
 
     #[test]

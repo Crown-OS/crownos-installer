@@ -1,19 +1,21 @@
 //! Windows flow only: what the payload decided, before doing any of it.
 
 use crownui::kit::{ButtonVariant, Segment, icons, segmented_bar};
-use crownui::prelude::{Color, Cx, Signal, Styled, View, hstack, rgb, vstack};
+use crownui::prelude::{Color, Cx, Signal, Styled, View, WHITE, hstack, vstack};
 
 use crate::engine::btrfs;
 use crate::engine::plan::{Plan, bytes};
 use crate::ui::Wizard;
 use crate::ui::components::{summary_tile, surface};
 use crate::ui::layout::{BLOCK_GAP, PageParts, caption, muted, tiles, wizard_pill};
-use crate::ui::palette::{BRAND, TRACK};
+use crate::ui::palette::{RAIL, TROUGH};
 
 const BAR_HEIGHT: f32 = 12.0;
 const LEGEND_GAP: f32 = 18.0;
 const DOT: f32 = 8.0;
-const FREE: Color = rgb(0xf2f2f6);
+const KEPT: Color = RAIL;
+const CROWNOS: Color = WHITE;
+const FREE: Color = TROUGH;
 
 pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
     let Some(plan) = wizard.with_untracked(cx, |wizard| wizard.plan().cloned()) else {
@@ -24,14 +26,17 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
         "Windows already set aside room for it.",
     )
     .content(vstack((allocation(&plan), facts(&plan))).gap(BLOCK_GAP))
-    .actions((
-        wizard_pill(
-            wizard,
-            "Edit partitions",
-            ButtonVariant::Secondary,
-            Wizard::open_editor,
-        ),
-        wizard_pill(wizard, "Next", ButtonVariant::Primary, Wizard::advance),
+    .leading(wizard_pill(
+        wizard,
+        "Edit partitions",
+        ButtonVariant::Secondary,
+        Wizard::open_editor,
+    ))
+    .actions(wizard_pill(
+        wizard,
+        "Continue",
+        ButtonVariant::Primary,
+        Wizard::advance,
     ))
 }
 
@@ -41,8 +46,8 @@ fn allocation(plan: &Plan) -> impl View + use<> {
     let kept = plan.windows_bytes;
     let free = plan.disk_size_bytes.saturating_sub(crownos + kept);
     let legend = hstack((
-        (kept > 0).then(|| legend_item(TRACK, format!("Kept — {}", bytes(kept)))),
-        legend_item(BRAND, format!("CrownOS — {}", bytes(crownos))),
+        (kept > 0).then(|| legend_item(KEPT, format!("Kept — {}", bytes(kept)))),
+        legend_item(CROWNOS, format!("CrownOS — {}", bytes(crownos))),
         legend_item(FREE, format!("Free — {}", bytes(free))),
     ))
     .gap(LEGEND_GAP)
@@ -50,8 +55,8 @@ fn allocation(plan: &Plan) -> impl View + use<> {
     surface((
         caption(format!("{} — {}", plan.disk, bytes(plan.disk_size_bytes))),
         segmented_bar([
-            Segment::new(kept as f32, TRACK),
-            Segment::new(crownos as f32, BRAND),
+            Segment::new(kept as f32, KEPT),
+            Segment::new(crownos as f32, CROWNOS),
             Segment::new(free as f32, FREE),
         ])
         .h(BAR_HEIGHT),

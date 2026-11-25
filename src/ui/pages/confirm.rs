@@ -1,15 +1,14 @@
 //! Either flow: the last look before anything is written.
 
-use crownui::kit::{ButtonVariant, setting_row, toggle};
-use crownui::prelude::{Cx, Listeners, Signal, Styled, View, keyed, vstack};
+use crownui::kit::ButtonVariant;
+use crownui::prelude::{Cx, Listeners, Signal, Styled, View, vstack};
 
 use crate::engine::ai::{Backend, ai_plan};
 use crate::engine::plan::{Plan, Reclaim, bytes};
 use crate::oobe::AiFeatures;
 use crate::ui::Wizard;
-use crate::ui::components::{Status, Tone, alert, note, pill, stage_row, surface};
+use crate::ui::components::{Status, Tone, alert, note, pill, stage_row};
 use crate::ui::layout::{BLOCK_GAP, PageParts, back_pill, caption, tiles};
-use crate::util::mirror::mirror;
 
 pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
     let Some((plan, dry_run)) = wizard.with_untracked(cx, |wizard| {
@@ -24,19 +23,10 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
         .map(|warning| alert(Tone::Caution, "Worth knowing", warning.clone()))
         .collect();
 
-    let step_list = keyed(
-        move |runtime| wizard.with(runtime, |wizard| wizard.ai_features),
-        move |cx, _| {
-            let step_rows = wizard
-                .with_untracked(cx, |wizard| wizard.plan().cloned())
-                .map(|plan| steps(cx, &plan));
-            vstack((step_rows,))
-        },
-    );
     let content = vstack((
         point_of_no_return(&plan, dry_run),
-        ai_features(cx, wizard),
-        step_list,
+        acceleration(cx, wizard),
+        steps(cx, &plan),
         vstack(warnings).gap(BLOCK_GAP),
         note(Tone::Info, reclaim(&plan)),
     ))
@@ -49,11 +39,11 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
     };
     PageParts::new("Ready to install", "Read this before anything is written.")
         .content(content)
-        .actions((
-            back_pill(wizard),
+        .leading(back_pill(wizard))
+        .actions(
             pill(primary, ButtonVariant::Primary)
                 .on_click(move |cx, _| wizard.update(cx, Wizard::begin_install)),
-        ))
+        )
 }
 
 fn point_of_no_return(plan: &Plan, dry_run: bool) -> impl View + use<> {
@@ -90,42 +80,18 @@ fn point_of_no_return(plan: &Plan, dry_run: bool) -> impl View + use<> {
     )
 }
 
-/// The switch for hardware-accelerated AI, with what it would set up here.
-/// Absent when the live image does not bundle the AI packages.
-fn ai_features(cx: &mut Cx, wizard: Signal<Wizard>) -> Option<impl View + use<>> {
-    let bundled = wizard.with_untracked(cx, |wizard| {
-        wizard
-            .context()
-            .is_some_and(|context| context.snapshot.ai_bundled)
-    });
-    if !bundled {
-        return None;
-    }
-    let enabled = mirror(
-        cx,
-        wizard,
-        |wizard| wizard.ai_features == AiFeatures::Enabled,
-        |wizard, enabled| {
-            wizard.set_ai_features(if enabled {
-                AiFeatures::Enabled
-            } else {
-                AiFeatures::Disabled
-            });
-        },
-    );
+/// What runs the AI features here, and the licence that comes with NVIDIA
+/// Maxine. Only when the live image sets AI acceleration up and AI is on.
+fn acceleration(cx: &mut Cx, wizard: Signal<Wizard>) -> Option<impl View + use<>> {
     let backends = wizard.with_untracked(cx, |wizard| {
-        wizard
-            .context()
-            .map(|context| ai_plan(&context.snapshot.accelerators).backends)
-            .unwrap_or_default()
-    });
-    Some(surface((
-        setting_row("AI features", toggle(enabled)),
-        caption(ai_summary(&backends)),
-    )))
+        let context = wizard.context()?;
+        (context.snapshot.ai_bundled && wizard.ai_features == AiFeatures::Enabled)
+            .then(|| ai_plan(&context.snapshot.accelerators).backends)
+    })?;
+    Some(note(Tone::Info, acceleration_summary(&backends)))
 }
 
-fn ai_summary(backends: &[Backend]) -> String {
+fn acceleration_summary(backends: &[Backend]) -> String {
     let names: Vec<&str> = backends.iter().map(|backend| backend.name()).collect();
     let maxine = if backends.contains(&Backend::Maxine) {
         " NVIDIA Maxine is downloaded from NVIDIA and used under NVIDIA's license terms."
@@ -133,8 +99,7 @@ fn ai_summary(backends: &[Backend]) -> String {
         ""
     };
     format!(
-        "Background blur, video enhancement and noise cancellation, accelerated by {}. \
-         Larger runtimes download once the new system is online.{maxine}",
+        "AI features run on {}. Larger runtimes download once the new system is online.{maxine}",
         names.join(", then ")
     )
 }
@@ -152,10 +117,11 @@ fn steps(cx: &mut Cx, plan: &Plan) -> impl View + use<> {
             stage_row(step.label(), "Waiting", waiting)
         })
         .collect();
-    surface((
+    vstack((
         caption(format!("{} steps, in this order", plan.steps.len())),
         tiles(rows),
     ))
+    .gap(BLOCK_GAP)
 }
 
 fn reclaim(plan: &Plan) -> String {

@@ -1,11 +1,12 @@
 //! The wizard's pages: one module per page, each returning the [`PageParts`]
-//! the card is assembled from.
+//! the column is assembled from.
 //!
 //! A page is built once when it opens. What changes while it is open — a list,
 //! a refusal, whether a button is enabled — is a `keyed` branch or a binding
 //! over the wizard signal, so typing in a field rebuilds nothing.
 
 mod account;
+mod ai;
 mod apps;
 mod blocked;
 mod confirm;
@@ -18,15 +19,15 @@ mod partitions;
 mod space;
 mod welcome;
 
-use crownui::prelude::{AnyView, Cx, Signal, View};
+use crownui::prelude::{AnyView, Cx, Memo, Signal, View};
 
 use super::layout::PageParts;
-use super::{Page, Wizard};
+use super::{Density, Page, Wizard};
 
 pub use intro::build as intro;
 
-/// The current page: the intro on its own, every other laid out for the card.
-pub fn page(cx: &mut Cx, wizard: Signal<Wizard>, page: Page) -> AnyView {
+/// The current page: the intro on its own, every other laid out for the column.
+pub fn page(cx: &mut Cx, wizard: Signal<Wizard>, page: Page, density: Memo<Density>) -> AnyView {
     let parts: PageParts = match page {
         Page::Intro => return intro(wizard).boxed(),
         Page::Welcome => welcome::build(cx, wizard),
@@ -36,10 +37,11 @@ pub fn page(cx: &mut Cx, wizard: Signal<Wizard>, page: Page) -> AnyView {
         Page::Partitions => partitions::build(cx, wizard),
         Page::Account => account::build(cx, wizard),
         Page::Apps => apps::build(cx, wizard),
+        Page::Ai => ai::build(cx, wizard, density),
         Page::Confirm => confirm::build(cx, wizard),
         Page::Progress => installing::build(cx, wizard),
         Page::Done => done::build(cx, wizard),
         Page::Blocked => blocked::build(cx, wizard),
     };
-    parts.into_view().boxed()
+    parts.into_view(density)
 }

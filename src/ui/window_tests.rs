@@ -12,6 +12,7 @@ use super::palette::oobe_theme;
 use super::root::shell;
 use super::tests::{iso_context, payload_context, sign_in};
 use super::{Blocker, MIN_WINDOW_SIZE, Page, WINDOW_SIZE, Wizard};
+use crate::engine::ai_level::AiLevel;
 use crate::engine::exec::{Event, Mode};
 use crate::engine::plan::bytes;
 use crate::network::{AccessPoint, Snapshot};
@@ -132,23 +133,28 @@ fn every_page() -> Vec<(&'static str, Wizard)> {
         wizard
     };
     vec![
-        (
-            "Welcome to CrownOS",
-            Wizard::ready(iso_context(), Mode::Commit),
-        ),
+        ("Welcome", Wizard::ready(iso_context(), Mode::Commit)),
         ("CrownOS is ready to install", payload_wizard()),
         (
-            "Connect to the Internet",
+            "Connect to the internet",
             networks(&[("Home Wi-Fi", true), ("Uniworld Wifi", false)]),
         ),
-        ("Choose a disk", iso_wizard()),
+        ("Select the disk", iso_wizard()),
         ("Where should CrownOS go?", on(iso_wizard(), Page::Space)),
         ("Partition editor", editing()),
         ("Let's get you started", on(payload_wizard(), Page::Account)),
-        ("Apps from other systems", on(iso_wizard(), Page::Apps)),
+        (
+            "Your browser and coding agents",
+            on(iso_wizard(), Page::Apps),
+        ),
+        ("Choose your AI level", {
+            let mut wizard = on(iso_wizard(), Page::Ai);
+            wizard.set_ai_level(AiLevel::Advanced);
+            wizard
+        }),
         ("Ready to install", confirming),
         ("Installing CrownOS", committed()),
-        ("You're all set", finished),
+        ("You’re all set", finished),
         ("Nothing has been changed", blocked),
         ("Installing CrownOS", failed()),
     ]
@@ -167,7 +173,9 @@ fn every_page_builds_in_the_state_that_reaches_it() {
 }
 
 /// Renders every page through Impeller's offscreen GLES target into
-/// `$CROWNOS_INSTALLER_RENDER_DIR/<index>.png`, for looking at.
+/// `$CROWNOS_INSTALLER_RENDER_DIR/<index>.png`, for looking at, at the
+/// window size in `$CROWNOS_INSTALLER_RENDER_SIZE` (`1728x1117`) or the
+/// default one.
 #[test]
 #[ignore = "needs a GPU; writes PNGs for manual inspection"]
 fn render_every_page() {
@@ -180,7 +188,13 @@ fn render_every_page() {
     let Some(dir) = std::env::var_os("CROWNOS_INSTALLER_RENDER_DIR") else {
         return;
     };
-    let (width, height) = WINDOW_SIZE;
+    let (width, height) = std::env::var("CROWNOS_INSTALLER_RENDER_SIZE")
+        .ok()
+        .and_then(|size| {
+            let (width, height) = size.split_once('x')?;
+            Some((width.parse().ok()?, height.parse().ok()?))
+        })
+        .unwrap_or(WINDOW_SIZE);
     for (index, (_, wizard)) in every_page().into_iter().enumerate() {
         let surface = Offscreen {
             width,
@@ -215,22 +229,24 @@ fn render_every_page() {
 
 // ---- The frame ----
 
-/// The card does not reflow its footer, so content that outgrows the column
-/// must scroll rather than push the action row off the card. At the smallest
-/// window the installer accepts, every page's buttons stay on the card.
+/// The column does not reflow its footer, so content that outgrows it must
+/// scroll rather than push the action row out of the window. At the smallest
+/// window the installer accepts, every page's buttons stay in the window,
+/// under the step track.
 #[test]
-fn every_action_row_sits_on_the_card_at_the_smallest_window() {
+fn every_action_row_stays_in_the_window_at_the_smallest_size() {
     let (_, height) = MIN_WINDOW_SIZE;
     let gutter = 24.0;
-    let card_bottom = height as f32 - gutter;
+    let window_bottom = height as f32 - gutter;
     for (wizard, button) in [
-        (payload_wizard(), "Next"),
-        (on(iso_wizard(), Page::Network), "Next"),
-        (iso_wizard(), "Next"),
-        (on(iso_wizard(), Page::Space), "Next"),
+        (payload_wizard(), "Continue"),
+        (on(iso_wizard(), Page::Network), "Continue"),
+        (iso_wizard(), "Continue"),
+        (on(iso_wizard(), Page::Space), "Continue"),
         (editing(), "Done"),
-        (on(payload_wizard(), Page::Account), "Next"),
-        (on(iso_wizard(), Page::Apps), "Next"),
+        (on(payload_wizard(), Page::Account), "Continue"),
+        (on(iso_wizard(), Page::Apps), "Continue"),
+        (on(iso_wizard(), Page::Ai), "Continue"),
         (
             {
                 let mut wizard = on(payload_wizard(), Page::Account);
@@ -241,53 +257,47 @@ fn every_action_row_sits_on_the_card_at_the_smallest_window() {
             "Install CrownOS",
         ),
         (failed(), "Restart"),
-        (on(payload_wizard(), Page::Done), "Restart now"),
     ] {
         let page = wizard.page;
         let mut app = window_sized(wizard, MIN_WINDOW_SIZE);
         let bounds = app.find(role(Role::Button).name(button)).bounds;
         let bottom = bounds.origin.y + bounds.size.height;
         assert!(
-            bottom <= card_bottom - 30.0,
-            "`{button}` on {page:?} ends at {bottom}, the card at {card_bottom}"
+            bottom <= window_bottom,
+            "`{button}` on {page:?} ends at {bottom}, the window at {window_bottom}"
         );
         let track = app
             .find(role(Role::ProgressBar).name("Installation steps"))
             .bounds;
-        let leftmost = ["Back", "Edit partitions", "Discard changes", button]
-            .into_iter()
-            .filter_map(|name| {
-                let query = role(Role::Button).name(name);
-                app.exists(query.clone())
-                    .then(|| app.find(query).bounds.origin.x)
-            })
-            .fold(f32::INFINITY, f32::min);
         assert!(
-            track.origin.x + track.size.width < leftmost,
-            "the step track runs under the buttons on {page:?}"
+            track.origin.y + track.size.height <= bounds.origin.y,
+            "the step track runs into the buttons on {page:?}"
         );
     }
+    let mut app = window_sized(on(payload_wizard(), Page::Done), MIN_WINDOW_SIZE);
+    let restart = app.find(role(Role::Button).name("Restart now")).bounds;
+    assert!(restart.origin.y + restart.size.height <= window_bottom);
 }
 
 #[test]
 fn the_step_track_follows_the_flow() {
     let mut app = window(iso_wizard());
-    assert_eq!(step(&mut app), "Step 2 of 7");
-    press(&mut app, "Next");
-    assert_eq!(step(&mut app), "Step 3 of 7");
-    press(&mut app, "Next");
-    assert_eq!(step(&mut app), "Step 4 of 7");
-    press(&mut app, "Back");
-    assert_eq!(step(&mut app), "Step 3 of 7");
+    assert_eq!(step(&mut app), "Step 2 of 8, Disk");
+    press(&mut app, "Continue");
+    assert_eq!(step(&mut app), "Step 3 of 8, Space");
+    press(&mut app, "Continue");
+    assert_eq!(step(&mut app), "Step 4 of 8, Account");
+    press(&mut app, "Go back");
+    assert_eq!(step(&mut app), "Step 3 of 8, Space");
 
     let mut app = window(on(payload_wizard(), Page::Done));
-    assert_eq!(step(&mut app), "All 6 steps complete");
+    assert_eq!(step(&mut app), "", "the finished page has no track");
 }
 
 #[test]
 fn moving_between_steps_is_animated_and_settles() {
     let mut app = window(iso_wizard());
-    app.click(role(Role::Button).name("Next"));
+    app.click(role(Role::Button).name("Continue"));
     app.advance_ms(16);
     assert!(app.is_animating(), "the pages cross over");
     app.settle();
@@ -296,11 +306,11 @@ fn moving_between_steps_is_animated_and_settles() {
         "nothing animates once a page has landed"
     );
     assert!(showing(&mut app, "Where should CrownOS go?"));
-    assert!(!showing(&mut app, "Choose a disk"));
+    assert!(!showing(&mut app, "Select the disk"));
 }
 
 #[test]
-fn the_window_opens_with_the_card_rising_in() {
+fn the_window_opens_with_the_column_rising_in() {
     let app = TestApp::with_size(
         component(|cx| {
             provide_theme(cx, oobe_theme());
@@ -319,9 +329,9 @@ fn intro() -> Wizard {
 }
 
 #[test]
-fn a_flashed_image_opens_on_the_intro_without_the_card() {
+fn a_flashed_image_opens_on_the_intro_without_the_step_track() {
     let mut app = window(intro());
-    assert!(showing(&mut app, "Welcome to CrownOS"));
+    assert!(showing(&mut app, "Welcome"));
     assert!(!app.exists(role(Role::ProgressBar).name("Installation steps")));
     assert!(!disabled(&mut app, "Try it out"));
 }
@@ -329,19 +339,19 @@ fn a_flashed_image_opens_on_the_intro_without_the_card() {
 #[test]
 fn installing_from_the_intro_opens_the_first_step_and_back_returns_to_it() {
     let mut app = window(intro());
-    press(&mut app, "Install");
-    assert!(showing(&mut app, "Choose a disk"));
-    assert_eq!(step(&mut app), "Step 2 of 7");
-    press(&mut app, "Back");
-    press(&mut app, "Back");
-    assert!(showing(&mut app, "Welcome to CrownOS"));
+    press(&mut app, "Install CrownOS");
+    assert!(showing(&mut app, "Select the disk"));
+    assert_eq!(step(&mut app), "Step 2 of 8, Disk");
+    press(&mut app, "Go back");
+    press(&mut app, "Go back");
+    assert!(showing(&mut app, "Welcome"));
 }
 
 #[test]
 fn the_intro_fits_the_smallest_window() {
     let (width, height) = MIN_WINDOW_SIZE;
     let mut app = window_sized(intro(), MIN_WINDOW_SIZE);
-    for choice in ["Install", "Try it out"] {
+    for choice in ["Install CrownOS", "Try it out"] {
         let bounds = app.find(role(Role::Button).name(choice)).bounds;
         assert!(
             bounds.origin.x >= 0.0
@@ -351,6 +361,40 @@ fn the_intro_fits_the_smallest_window() {
             "`{choice}` spills out of the window: {bounds:?}"
         );
     }
+}
+
+#[test]
+fn the_intro_installs_from_the_keyboard() {
+    let mut app = window(intro());
+    app.focus(role(Role::Button).name("Install CrownOS"));
+    app.press_key("Enter").settle();
+    assert!(showing(&mut app, "Select the disk"));
+    assert_eq!(step(&mut app), "Step 2 of 8, Disk");
+}
+
+// ---- Keyboard ----
+
+#[test]
+fn choices_and_buttons_answer_enter_and_space() {
+    let mut wizard = iso_wizard();
+    wizard.target = super::Target::default();
+    let mut app = window(wizard);
+    let disk = || role(Role::RadioButton).name("/dev/sda");
+    app.focus(disk());
+    app.press_key("Space").settle();
+    assert_eq!(app.find(disk()).states.checked, Some(true));
+    app.focus(role(Role::Button).name("Continue"));
+    app.press_key("Enter").settle();
+    assert!(showing(&mut app, "Where should CrownOS go?"));
+}
+
+#[test]
+fn a_network_is_chosen_from_the_keyboard() {
+    let mut app = window(networks(&[("Home Wi-Fi", true), ("Uniworld Wifi", false)]));
+    app.focus(role(Role::Button).name("Uniworld Wifi"));
+    app.press_key("Enter").settle();
+    let row = app.find(role(Role::Button).name("Uniworld Wifi"));
+    assert_eq!(row.value.as_deref(), Some("Selected"));
 }
 
 // ---- Welcome ----
@@ -376,7 +420,7 @@ fn the_partition_editor_opens_from_welcome_and_returns_to_it() {
     assert!(showing(&mut app, "Partition editor"));
     assert_eq!(
         step(&mut app),
-        "Step 1 of 6",
+        "Step 1 of 7, Welcome",
         "the editor does not move the track"
     );
     press(&mut app, "Done");
@@ -419,7 +463,7 @@ fn an_offline_machine_may_continue_past_the_network_page() {
         context.online = false;
     }
     let mut app = window(wizard);
-    assert!(!disabled(&mut app, "Next"));
+    assert!(!disabled(&mut app, "Continue"));
 }
 
 // ---- Disk ----
@@ -429,10 +473,10 @@ fn the_disk_page_needs_a_disk_before_it_continues() {
     let mut wizard = iso_wizard();
     wizard.target = super::Target::default();
     let mut app = window(wizard);
-    assert!(disabled(&mut app, "Next"));
+    assert!(disabled(&mut app, "Continue"));
     app.click(role(Role::RadioButton).name("/dev/sda")).settle();
-    assert!(!disabled(&mut app, "Next"));
-    press(&mut app, "Next");
+    assert!(!disabled(&mut app, "Continue"));
+    press(&mut app, "Continue");
     assert!(showing(&mut app, "Where should CrownOS go?"));
 }
 
@@ -447,10 +491,12 @@ fn the_space_page_shows_the_automatic_layout_and_it_reaches_the_plan() {
         &mut app,
         "CrownOS will create a 1.0 GiB boot partition"
     ));
-    press(&mut app, "Next");
-    press(&mut app, "Next");
-    assert!(showing(&mut app, "Apps from other systems"));
-    press(&mut app, "Next");
+    press(&mut app, "Continue");
+    press(&mut app, "Continue");
+    assert!(showing(&mut app, "Your browser and coding agents"));
+    press(&mut app, "Continue");
+    assert!(showing(&mut app, "Choose your AI level"));
+    press(&mut app, "Continue");
     assert!(showing(&mut app, "Ready to install"));
     assert!(app.exists(role(Role::ListItem).name("Creating the boot partition")));
     assert!(app.exists(role(Role::ListItem).name("Formatting as btrfs")));
@@ -459,11 +505,11 @@ fn the_space_page_shows_the_automatic_layout_and_it_reaches_the_plan() {
 #[test]
 fn the_iso_flow_walks_from_disk_to_account_by_its_buttons() {
     let mut app = window(iso_wizard());
-    press(&mut app, "Next");
+    press(&mut app, "Continue");
     assert!(showing(&mut app, "Where should CrownOS go?"));
-    press(&mut app, "Next");
+    press(&mut app, "Continue");
     assert!(showing(&mut app, "Let's get you started"));
-    press(&mut app, "Back");
+    press(&mut app, "Go back");
     assert!(showing(&mut app, "Where should CrownOS go?"));
 }
 
@@ -512,15 +558,15 @@ fn typing_the_missing_username_moves_on_to_the_apps_page() {
     sign_in(&mut wizard);
     wizard.form.username.clear();
     let mut app = window(wizard);
-    assert!(disabled(&mut app, "Next"));
+    assert!(disabled(&mut app, "Continue"));
 
     app.focus(role(Role::TextField).name("Username"));
     app.type_text("ada");
     app.settle();
-    assert!(!disabled(&mut app, "Next"));
+    assert!(!disabled(&mut app, "Continue"));
 
-    press(&mut app, "Next");
-    assert!(showing(&mut app, "Apps from other systems"));
+    press(&mut app, "Continue");
+    assert!(showing(&mut app, "Your browser and coding agents"));
 }
 
 // ---- Apps ----
@@ -531,21 +577,24 @@ fn the_browser_choice_and_the_tool_switches_are_reachable() {
     sign_in(&mut wizard);
     let mut app = window(wizard);
     let firefox = role(Role::RadioButton).name("Firefox");
-    let codex = role(Role::Switch).name("Codex");
+    let codex = role(Role::Checkbox).name("Codex");
     assert_eq!(app.find(firefox.clone()).states.checked, Some(false));
     assert_eq!(app.find(codex.clone()).states.checked, Some(false));
 
     app.click(firefox.clone()).settle();
     app.click(codex.clone()).settle();
-    press(&mut app, "Next");
+    press(&mut app, "Continue");
+    assert!(showing(&mut app, "Choose your AI level"));
+    press(&mut app, "Continue");
     assert!(app.exists(role(Role::ListItem).name("Saving the setup choices")));
-    press(&mut app, "Back");
+    press(&mut app, "Go back");
+    press(&mut app, "Go back");
 
     assert_eq!(app.find(firefox).states.checked, Some(true));
     assert_eq!(app.find(codex).states.checked, Some(true));
     for name in ["Windows apps", "Claude Code", "Cursor"] {
         assert_eq!(
-            app.find(role(Role::Switch).name(name)).states.checked,
+            app.find(role(Role::Checkbox).name(name)).states.checked,
             Some(false),
             "{name}"
         );
@@ -557,21 +606,27 @@ fn an_image_without_the_setup_runner_offers_only_windows_apps() {
     let mut context = iso_context();
     context.snapshot.published_packages = Some(vec!["crownbar".to_owned()]);
     let mut app = window(on(Wizard::ready(context, Mode::Commit), Page::Apps));
-    assert!(app.exists(role(Role::Switch).name("Windows apps")));
+    assert!(app.exists(role(Role::Checkbox).name("Windows apps")));
     assert!(!app.exists(role(Role::RadioButton).name("Firefox")));
-    assert!(!app.exists(role(Role::Switch).name("Codex")));
+    assert!(!app.exists(role(Role::Checkbox).name("Codex")));
+    assert!(showing(&mut app, "Apps from other systems"));
 }
 
+/// At the smallest window the choices outgrow the column and scroll; the
+/// scrolling area ends above the step track, so no choice slides under it.
 #[test]
-fn the_apps_switches_sit_above_the_actions_at_the_smallest_window() {
+fn the_apps_choices_scroll_above_the_track_at_the_smallest_window() {
     let mut app = window_sized(on(iso_wizard(), Page::Apps), MIN_WINDOW_SIZE);
-    let cursor = app.find(role(Role::Switch).name("Cursor")).bounds;
-    let next = app.find(role(Role::Button).name("Next")).bounds;
+    assert!(app.exists(role(Role::Checkbox).name("Cursor")));
+    let scroller = app.find(role(Role::ScrollView)).bounds;
+    let track = app
+        .find(role(Role::ProgressBar).name("Installation steps"))
+        .bounds;
     assert!(
-        cursor.origin.y + cursor.size.height < next.origin.y,
-        "the Cursor switch ends at {}, the Next button starts at {}",
-        cursor.origin.y + cursor.size.height,
-        next.origin.y
+        scroller.origin.y + scroller.size.height <= track.origin.y,
+        "the choices end at {}, the step track starts at {}",
+        scroller.origin.y + scroller.size.height,
+        track.origin.y
     );
 }
 
@@ -603,15 +658,134 @@ fn installing_starts_from_the_confirmation_and_lights_the_first_step() {
 }
 
 #[test]
-fn the_ai_switch_adds_the_acceleration_step_to_the_plan() {
+fn choosing_an_ai_level_adds_the_acceleration_step_to_the_plan() {
+    let mut wizard = on(payload_wizard(), Page::Account);
+    sign_in(&mut wizard);
+    wizard.go(Page::Ai);
+    let mut app = window(wizard);
+    let ai_step = role(Role::ListItem).name("Setting up AI acceleration");
+    let off = role(Role::RadioButton).name("Off");
+    let minimal = role(Role::RadioButton).name("Minimal");
+    assert_eq!(app.find(off.clone()).states.checked, Some(true));
+    press(&mut app, "Continue");
+    assert!(showing(&mut app, "Ready to install"));
+    assert!(!app.exists(ai_step.clone()));
+
+    press(&mut app, "Go back");
+    app.click(minimal.clone()).settle();
+    assert_eq!(app.find(minimal).states.checked, Some(true));
+    assert_eq!(app.find(off).states.checked, Some(false));
+    press(&mut app, "Continue");
+    assert!(app.exists(ai_step));
+}
+
+#[test]
+fn the_confirmation_names_what_runs_ai_only_when_ai_is_on() {
     let mut wizard = on(payload_wizard(), Page::Account);
     sign_in(&mut wizard);
     wizard.go(Page::Confirm);
     let mut app = window(wizard);
-    let ai_step = role(Role::ListItem).name("Setting up AI acceleration");
-    assert!(!app.exists(ai_step.clone()));
-    app.click(role(Role::Switch)).settle();
-    assert!(app.exists(ai_step));
+    assert!(!showing(&mut app, "AI features run on"));
+
+    let mut wizard = on(payload_wizard(), Page::Account);
+    sign_in(&mut wizard);
+    wizard.set_ai_level(AiLevel::Advanced);
+    wizard.go(Page::Confirm);
+    let mut app = window(wizard);
+    let summary = app.semantics_snapshot();
+    assert!(summary.contains("AI features run on"), "{summary}");
+}
+
+#[test]
+fn where_ai_runs_is_one_of_two_and_starts_on_this_device() {
+    let mut app = window(on(iso_wizard(), Page::Ai));
+    let on_device = role(Role::RadioButton).name("On this device only");
+    let cloud = role(Role::RadioButton).name("Allow cloud models");
+    assert_eq!(app.find(on_device.clone()).states.checked, Some(true));
+    assert_eq!(app.find(cloud.clone()).states.checked, Some(false));
+    app.click(cloud.clone()).settle();
+    assert_eq!(app.find(cloud).states.checked, Some(true));
+    assert_eq!(app.find(on_device).states.checked, Some(false));
+}
+
+#[test]
+fn an_ai_level_is_chosen_from_the_keyboard() {
+    let mut app = window(on(iso_wizard(), Page::Ai));
+    let advanced = role(Role::RadioButton).name("Advanced");
+    app.focus(advanced.clone());
+    app.press_key("Enter").settle();
+    assert_eq!(app.find(advanced).states.checked, Some(true));
+}
+
+/// The design's window: the cards are the design's size and place, and the
+/// switch is the design's height.
+#[test]
+fn the_ai_cards_match_the_design_at_its_size() {
+    let mut app = window_sized(on(iso_wizard(), Page::Ai), (1728, 1117));
+    for (name, x) in [("Off", 304.0), ("Minimal", 684.0), ("Advanced", 1064.0)] {
+        let card = app.find(role(Role::RadioButton).name(name)).bounds;
+        assert!((card.origin.x - x).abs() < 0.5, "{name}: {card:?}");
+        assert!((card.size.width - 360.0).abs() < 0.5, "{name}: {card:?}");
+    }
+    let switch = app.find(role(Role::Group).name("Where AI runs")).bounds;
+    assert!((switch.size.height - 54.0).abs() < 0.5, "{switch:?}");
+}
+
+/// In every window the installer accepts, the cards stay side by side inside
+/// it. In laptop and desktop windows the cards and the switch fit above the
+/// step track without scrolling. The note under the switch is checked in the
+/// GPU renders: the headless text system sets type taller than Impeller does.
+#[test]
+fn the_ai_page_fits_short_and_narrow_windows() {
+    let sizes = [
+        (1366, 768),
+        (1280, 800),
+        (1440, 900),
+        (1600, 900),
+        (1680, 1050),
+        (1920, 1080),
+        (1728, 1117),
+        (2560, 1440),
+        MIN_WINDOW_SIZE,
+    ];
+    for size in sizes {
+        let mut wizard = on(iso_wizard(), Page::Ai);
+        wizard.set_ai_level(AiLevel::Advanced);
+        let mut app = window_sized(wizard, size);
+        let width = size.0 as f32;
+        let cards: Vec<_> = ["Off", "Minimal", "Advanced"]
+            .into_iter()
+            .map(|name| app.find(role(Role::RadioButton).name(name)).bounds)
+            .collect();
+        for card in &cards {
+            assert!(
+                card.origin.x >= 0.0 && card.max_x() <= width,
+                "{size:?}: {card:?}"
+            );
+            assert!(
+                (card.origin.y - cards[0].origin.y).abs() < 0.5,
+                "{size:?}: not one row"
+            );
+            assert!(
+                (card.size.height - cards[0].size.height).abs() < 0.5,
+                "{size:?}: uneven"
+            );
+        }
+        if size == MIN_WINDOW_SIZE {
+            continue;
+        }
+        let track = app
+            .find(role(Role::ProgressBar).name("Installation steps"))
+            .bounds;
+        let switch = app.find(role(Role::Group).name("Where AI runs")).bounds;
+        assert!(cards[0].max_y() <= switch.origin.y, "{size:?}");
+        assert!(
+            switch.max_y() <= track.origin.y,
+            "{size:?}: the switch ends at {}, the track starts at {}",
+            switch.max_y(),
+            track.origin.y
+        );
+    }
 }
 
 #[test]
@@ -658,22 +832,28 @@ fn a_failed_install_shows_why_and_offers_a_restart() {
 // ---- Done and leaving ----
 
 #[test]
-fn the_done_page_summarises_what_was_installed() {
+fn the_done_page_says_how_to_start_the_new_system() {
     let mut wizard = committed();
     wizard.on_install_event(Event::Finished { dry_run: false });
     let mut app = window(wizard);
-    assert!(app.exists(role(Role::Image).name("Installed")));
-    let account = app.find(role(Role::Group).name("Account"));
-    assert_eq!(account.value.as_deref(), Some("crown"));
-    assert!(app.exists(role(Role::Group).name("Computer name")));
+    assert!(showing(
+        &mut app,
+        "CrownOS is installed. Restart to start using it."
+    ));
+    assert!(showing(
+        &mut app,
+        "CrownOS is the default in the boot menu. Hold Space while the computer starts \
+         to choose Windows or recovery instead."
+    ));
+    assert!(!disabled(&mut app, "Restart now"));
 }
 
 #[test]
-fn restarting_closes_the_card_and_locks_the_button() {
+fn restarting_closes_the_column_and_locks_the_button() {
     let mut app = window(on(payload_wizard(), Page::Done));
     app.click(role(Role::Button).name("Restart now"));
     app.advance_ms(16);
-    assert!(app.is_animating(), "the card sinks away");
+    assert!(app.is_animating(), "the column sinks away");
     app.settle();
     assert!(
         disabled(&mut app, "Restart now"),
@@ -704,5 +884,5 @@ fn a_refused_iso_install_can_choose_another_disk() {
         "the track says nothing about progress here"
     );
     press(&mut app, "Choose another disk");
-    assert!(showing(&mut app, "Choose a disk"));
+    assert!(showing(&mut app, "Select the disk"));
 }

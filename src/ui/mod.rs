@@ -3,9 +3,10 @@
 //!
 //! # Shape
 //!
-//! The OOBE design: one frosted card over a pink backdrop, the page's heading
-//! across its top, a step track and the page's buttons along its foot. Pages
-//! drift and fade between each other ([`chrome`]); the widgets they are made
+//! The OOBE design: white type and glass over a black window, with a row of
+//! glowing columns along its foot. Each page has its heading centred at the
+//! top, and a step track and the page's buttons along the foot. Pages drift
+//! and fade between each other ([`chrome`]); the widgets they are made
 //! of are the kit's, in the design's shapes ([`components`]). This module owns
 //! navigation, because which step comes next depends on how the installer was
 //! started and on what the disk turns out to look like.
@@ -14,7 +15,7 @@
 //! it; [`pages`] read it through one signal and call into it. The tests drive
 //! the wizard directly, and the pages headlessly.
 //!
-//! # Two flows through one card
+//! # Two flows through one column
 //!
 //! [`Provenance`](crate::provenance::Provenance) decides which:
 //!
@@ -38,6 +39,7 @@
 mod chrome;
 mod components;
 mod context;
+mod density;
 mod editor;
 mod form;
 mod layout;
@@ -55,6 +57,7 @@ use crownui::{AppConfig, RunError};
 use crate::engine::exec::Mode;
 
 pub use context::{Blocker, Context};
+pub use density::{Density, Measures};
 pub use editor::Editor;
 pub use form::Form;
 pub use page::Page;
@@ -65,7 +68,7 @@ pub use wizard::Wizard;
 /// The window a developer gets when rehearsing outside `cage`. Under `cage` it
 /// is full-screen and this is never consulted.
 const WINDOW_SIZE: (u32, u32) = (1280, 800);
-/// Below this the card's two-column grids no longer fit their rows.
+/// Below this the column's two-column grids no longer fit their rows.
 const MIN_WINDOW_SIZE: (u32, u32) = (1024, 640);
 
 /// Run the wizard until the user restarts or the window closes.

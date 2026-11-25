@@ -1,22 +1,19 @@
 //! The window's one view: the backdrop, and over it either the intro or the
-//! card with the current page moving in and out of it and the step track along
+//! current page moving in and out of the column, with the step track along
 //! its foot.
 
 use crownui::kit::provide_theme;
 use crownui::prelude::{Signal, Styled, View, bind, component, show, vstack};
 
-use super::chrome::{StepMark, backdrop, card, step_track, step_transition};
+use super::chrome::{StepMark, backdrop, column, sized, step_track, step_transition};
+use super::components::PILL_HEIGHT;
+use super::layout::TRACK_TO_ACTIONS;
 use super::palette::oobe_theme;
-use super::{Blocker, Context, Page, Wizard, pages};
+use super::{Blocker, Context, Density, Page, Wizard, pages};
 use crate::engine::exec::Mode;
 
-/// Space kept between the card and the window's edge.
+/// Space kept between the content and the window's sides.
 const GUTTER: f32 = 24.0;
-/// The track's segments sit level with the middle of the action pills.
-const TRACK_LIFT: f32 = 17.0;
-const TRACK_WIDTH: f32 = 740.0;
-/// Kept clear at the track's right for the page's buttons.
-const ACTIONS_ROOM: f32 = 330.0;
 
 pub fn root(startup: Result<Context, Blocker>, mode: Mode) -> impl View {
     component(move |cx| {
@@ -33,7 +30,7 @@ pub fn shell(wizard: Signal<Wizard>) -> impl View {
         show(
             on_intro,
             move || pages::intro(wizard),
-            move || carded(wizard),
+            move || framed(wizard),
         )
         .w_full()
         .h_full()
@@ -42,34 +39,45 @@ pub fn shell(wizard: Signal<Wizard>) -> impl View {
     ))
     .w_full()
     .h_full()
-    .p(GUTTER)
+    .px(GUTTER)
 }
 
-fn carded(wizard: Signal<Wizard>) -> impl View {
-    component(move |cx| {
-        let closing = cx.memo(move |runtime| wizard.with(runtime, |wizard| wizard.closing));
-        let mark = cx.memo(move |runtime| wizard.with(runtime, step_mark));
-        let pages = step_transition(
-            move |runtime| wizard.with(runtime, |wizard| wizard.page),
-            Page::ordinal,
-            move |cx, page| pages::page(cx, wizard, page),
-        );
-        let track = step_track(mark)
-            .absolute()
-            .left(0.0)
-            .right(ACTIONS_ROOM)
-            .bottom(TRACK_LIFT)
-            .max_w(TRACK_WIDTH);
-        card(vstack((pages, track)).relative().flex_1().w_full(), closing)
+fn framed(wizard: Signal<Wizard>) -> impl View {
+    sized(move |window| {
+        component(move |cx| {
+            let density = cx.memo(move |runtime| Density::for_height(window.get(runtime).height));
+            let closing = cx.memo(move |runtime| wizard.with(runtime, |wizard| wizard.closing));
+            let mark = cx.memo(move |runtime| wizard.with(runtime, step_mark));
+            let pages = step_transition(
+                move |runtime| wizard.with(runtime, |wizard| wizard.page),
+                Page::ordinal,
+                move |cx, page| pages::page(cx, wizard, page, density),
+            );
+            let track = step_track(mark)
+                .absolute()
+                .left(0.0)
+                .right(0.0)
+                .bottom(PILL_HEIGHT + TRACK_TO_ACTIONS);
+            column(
+                vstack((pages, track)).relative().flex_1().w_full(),
+                window,
+                density,
+                closing,
+            )
+        })
     })
+    .w_full()
+    .h_full()
+    .items_center()
 }
 
 /// What the step track reads for the wizard as it stands.
 pub fn step_mark(wizard: &Wizard) -> StepMark {
-    let (total, current) = wizard.step_indicator();
     match wizard.page {
-        Page::Blocked => StepMark::Hidden,
-        Page::Done => StepMark::Complete { total },
-        _ => StepMark::At { current, total },
+        Page::Blocked | Page::Done => StepMark::Hidden,
+        _ => StepMark::At {
+            current: wizard.step_indicator().1,
+            labels: Page::labels(wizard.provenance()),
+        },
     }
 }

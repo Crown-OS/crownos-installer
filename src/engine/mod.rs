@@ -33,6 +33,7 @@
 //! vector either. See [`exec::Cmd`].
 
 pub mod ai;
+pub mod ai_level;
 pub mod base;
 pub mod boot;
 pub mod btrfs;

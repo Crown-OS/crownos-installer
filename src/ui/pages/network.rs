@@ -4,7 +4,7 @@
 //! Choosing a secured network asks for its password beside the list; an open
 //! one joins straight away from "Connect".
 
-use crownui::kit::{ButtonVariant, TextInputOptions, icons, text_input};
+use crownui::kit::{ButtonVariant, TextInputOptions, text_input};
 use crownui::prelude::{
     Color, Cx, Listeners, Role, Semantic, Signal, Styled, View, bind, hstack, keyed, rgb, show,
     text, vstack,
@@ -12,19 +12,22 @@ use crownui::prelude::{
 
 use crate::network::{self, AccessPoint, Network};
 use crate::ui::Wizard;
-use crate::ui::components::{NetworkLine, Status, Tone, alert, field, network_row, note, pill};
+use crate::ui::components::{
+    NetworkLine, Status, Tone, alert, field, glyph, network_row, note, pill,
+};
 use crate::ui::layout::{BLOCK_GAP, PageParts, back_pill, next_pill, nothing};
-use crate::ui::palette::{BRAND, INK};
+use crate::ui::palette::{FOREGROUND, GLASS, HAIRLINE, SECONDARY, SUBDUED};
 use crate::util::mirror::mirror;
 use crate::util::worker::spawn_worker;
 
-const LIST_WIDTH: f32 = 432.0;
-const ROW_GAP: f32 = 12.0;
-const COLUMN_GAP: f32 = 32.0;
+const LIST_WIDTH: f32 = 640.0;
+const LIST_RADIUS: f32 = 45.0;
+const LIST_INSET: f32 = 12.0;
+const ROW_GAP: f32 = 4.0;
 const DOT: f32 = 8.0;
+const DOT_GAP: f32 = 10.0;
 const STATUS_SIZE: f32 = 15.0;
-const LOOKING: Color = rgb(0x8b8996);
-const OFFLINE: Color = rgb(0xb45409);
+const OFFLINE: Color = rgb(0xffc56b);
 
 pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
     let commands = spawn_worker(cx, network::run, move |cx, event| {
@@ -43,11 +46,22 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
             })
         },
         move |cx, points| {
+            if points.is_empty() {
+                return nothing();
+            }
             let rows: Vec<_> = points
                 .iter()
                 .map(|point| access_point(cx, wizard, point))
                 .collect();
-            vstack(rows).gap(ROW_GAP).w_full()
+            vstack(rows)
+                .gap(ROW_GAP)
+                .p(LIST_INSET)
+                .w_full()
+                .rounded(LIST_RADIUS)
+                .bg(GLASS)
+                .border(1.0)
+                .border_color(HAIRLINE)
+                .boxed()
         },
     );
 
@@ -56,9 +70,9 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
         |_, (line, color)| {
             hstack((
                 vstack(()).size(DOT).rounded(DOT / 2.0).bg(color),
-                text(line).text_size(STATUS_SIZE).text_color(INK),
+                text(line).text_size(STATUS_SIZE).text_color(SECONDARY),
             ))
-            .gap(10.0)
+            .gap(DOT_GAP)
             .items_center()
             .role(Role::Group)
             .label("Connection")
@@ -95,6 +109,7 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
                 text_input(value)
                     .secret()
                     .on_submit(move |cx, _| wizard.update(cx, |wizard| wizard.network.join())),
+                Some(glyph::LOCK),
             ))
             .w_full()
             .enter(|style| style.opacity(0.0).translate_y(-8.0))
@@ -112,23 +127,19 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
             })
         }),
         move || {
-            pill(
-                bind(move |runtime| {
-                    wizard.with(runtime, |wizard| {
-                        if wizard.network.joining.is_some() {
-                            "Connecting…"
-                        } else {
-                            "Connect"
-                        }
-                        .to_owned()
-                    })
-                }),
-                ButtonVariant::Secondary,
+            keyed(
+                move |runtime| wizard.with(runtime, |wizard| wizard.network.joining.is_some()),
+                move |_, joining| {
+                    pill(
+                        if joining { "Connecting…" } else { "Connect" },
+                        ButtonVariant::Secondary,
+                    )
+                    .disabled(bind(move |runtime| {
+                        wizard.with(runtime, |wizard| !wizard.network.can_join())
+                    }))
+                    .on_click(move |cx, _| wizard.update(cx, |wizard| wizard.network.join()))
+                },
             )
-            .disabled(bind(move |runtime| {
-                wizard.with(runtime, |wizard| !wizard.network.can_join())
-            }))
-            .on_click(move |cx, _| wizard.update(cx, |wizard| wizard.network.join()))
         },
         nothing,
     );
@@ -142,32 +153,31 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
         },
     );
 
-    let side = vstack((explanation, passphrase, join, failure))
-        .gap(BLOCK_GAP)
-        .items_start()
-        .flex_1();
-
     let can_go_back = wizard.with_untracked(cx, |wizard| wizard.previous_page().is_some());
-    PageParts::new(
-        "Connect to the Internet",
-        "Optional. CrownOS installs without a connection; with one, it can update right away.",
+    let parts = PageParts::new(
+        "Connect to the internet",
+        "Optional. You can set up Wi-Fi later in Settings.",
     )
     .content(
-        hstack((
-            vstack((connection, list))
-                .gap(BLOCK_GAP)
-                .w(LIST_WIDTH)
-                .shrink(0.0),
-            side,
+        vstack((
+            connection.self_center(),
+            list,
+            passphrase,
+            join.self_center(),
+            explanation,
+            failure,
         ))
-        .gap(COLUMN_GAP)
-        .items_start()
-        .w_full(),
+        .gap(BLOCK_GAP + 8.0)
+        .w_full()
+        .max_w(LIST_WIDTH)
+        .self_center(),
     )
-    .actions((
-        can_go_back.then(|| back_pill(wizard)),
-        next_pill(wizard, |_| false),
-    ))
+    .actions(next_pill(wizard, |_| false));
+    if can_go_back {
+        parts.leading(back_pill(wizard))
+    } else {
+        parts
+    }
 }
 
 fn access_point(cx: &mut Cx, wizard: Signal<Wizard>, point: &AccessPoint) -> impl View + use<> {
@@ -222,11 +232,7 @@ fn line(point: &AccessPoint) -> NetworkLine {
     NetworkLine {
         ssid: point.ssid.clone(),
         detail: format!("{kind} · signal {}%", point.strength),
-        glyph: if point.secured {
-            icons::LOCK
-        } else {
-            icons::WIFI
-        },
+        secured: point.secured,
         usable: !point.enterprise,
     }
 }
@@ -238,11 +244,13 @@ pub fn connection(network: &Network) -> (String, Color) {
         .as_ref()
         .and_then(|snapshot| snapshot.access_points.iter().find(|point| point.active));
     match (&network.joining, active) {
-        (Some(ssid), _) => (format!("Connecting to {ssid}…"), BRAND),
-        (None, Some(point)) if network.online() => (format!("Connected to {}", point.ssid), BRAND),
-        (None, None) if network.online() => ("Connected by cable".to_owned(), BRAND),
+        (Some(ssid), _) => (format!("Connecting to {ssid}…"), FOREGROUND),
+        (None, Some(point)) if network.online() => {
+            (format!("Connected to {}", point.ssid), FOREGROUND)
+        }
+        (None, None) if network.online() => ("Connected by cable".to_owned(), FOREGROUND),
         _ if network.snapshot.is_none() && network.unavailable.is_none() => {
-            ("Looking for networks…".to_owned(), LOOKING)
+            ("Looking for networks…".to_owned(), SUBDUED)
         }
         _ => ("Not connected".to_owned(), OFFLINE),
     }

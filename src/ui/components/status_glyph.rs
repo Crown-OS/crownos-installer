@@ -6,24 +6,24 @@
 use crownui::ext::Kind;
 use crownui::kit::{icon_colored, icons, spinner};
 use crownui::prelude::{
-    Color, Element, Memo, Role, Semantic, Spring, Styled, TRANSPARENT, View, WHITE, bind, rgb,
-    show, text, vstack,
+    Color, Element, Memo, Role, Semantic, Spring, Styled, TRANSPARENT, View, WHITE, bind, icon,
+    rgba, show, text, vstack,
 };
 
-use crate::ui::palette::BRAND;
+use super::glyph;
+use crate::ui::palette::{DANGER, INK, SECONDARY};
 
-const DISC_SIZE: f32 = 28.0;
+const DISC_SIZE: f32 = 32.0;
 const BARE_SIZE: f32 = 18.0;
-const NUMBER_SIZE: f32 = 12.0;
+const NUMBER_SIZE: f32 = 11.0;
+const NUMBER_TRACKING: f32 = 0.88;
 const SPINNER_RATIO: f32 = 0.55;
 const MARK_RATIO: f32 = 0.5;
 const MARK_STROKE: f32 = 3.0;
 const HIDDEN_SCALE: f32 = 0.3;
 const TWIST: f32 = -45.0;
-const WAITING: Color = rgb(0xf2f2f6);
-const WAITING_TEXT: Color = rgb(0x8b8996);
-const FAILED: Color = rgb(0xc22727);
-const WORKING_TINT: f32 = 0.12;
+const WAITING_RIM: Color = rgba(0xffffff33);
+const WORKING: Color = rgba(0xffffff14);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -46,10 +46,10 @@ impl Status {
 
     fn disc(self) -> Color {
         match self {
-            Self::Waiting(_) => WAITING,
-            Self::Working => BRAND.with_alpha_factor(WORKING_TINT),
-            Self::Done => BRAND,
-            Self::Failed => FAILED,
+            Self::Waiting(_) => TRANSPARENT,
+            Self::Working => WORKING,
+            Self::Done => WHITE,
+            Self::Failed => DANGER,
         }
     }
 }
@@ -59,7 +59,7 @@ impl Status {
 pub enum Look {
     /// On a coloured disc, for lists of steps.
     Disc,
-    /// Just the mark, in the brand colour, for trailing a row.
+    /// Just the mark, for trailing a row.
     Bare,
 }
 
@@ -69,9 +69,9 @@ pub fn status_glyph(status: Memo<Status>, look: Look) -> impl View + Styled {
         Look::Disc => DISC_SIZE,
         Look::Bare => BARE_SIZE,
     };
-    let mark_color = match look {
-        Look::Disc => WHITE,
-        Look::Bare => BRAND,
+    let (done_color, failed_color) = match look {
+        Look::Disc => (INK, WHITE),
+        Look::Bare => (WHITE, DANGER),
     };
     let shown = move |wanted: fn(Status) -> bool| {
         (
@@ -99,8 +99,9 @@ pub fn status_glyph(status: Memo<Status>, look: Look) -> impl View + Styled {
             _ => String::new(),
         }))
         .text_size(NUMBER_SIZE)
-        .font_semibold()
-        .text_color(WAITING_TEXT),
+        .font_medium()
+        .tracking(NUMBER_TRACKING)
+        .text_color(SECONDARY),
     )
     .opacity(number_opacity)
     .scale(number_scale)
@@ -119,22 +120,21 @@ pub fn status_glyph(status: Memo<Status>, look: Look) -> impl View + Styled {
     .inset(0.0);
 
     let (done_opacity, done_scale) = shown(|status| status == Status::Done);
-    let done =
-        layer(icon_colored(icons::CHECK, MARK_STROKE, move |_| mark_color).size(size * MARK_RATIO))
-            .opacity(done_opacity)
-            .scale(done_scale)
-            .rotate(bind(move |runtime| {
-                if status.get(runtime) == Status::Done {
-                    0.0
-                } else {
-                    TWIST
-                }
-            }))
-            .transition(Spring::bouncy());
+    let done = layer(icon(glyph::CHECK, done_color).size(size * MARK_RATIO))
+        .opacity(done_opacity)
+        .scale(done_scale)
+        .rotate(bind(move |runtime| {
+            if status.get(runtime) == Status::Done {
+                0.0
+            } else {
+                TWIST
+            }
+        }))
+        .transition(Spring::bouncy());
 
     let (failed_opacity, failed_scale) = shown(|status| status == Status::Failed);
     let failed =
-        layer(icon_colored(icons::X, MARK_STROKE, move |_| mark_color).size(size * MARK_RATIO))
+        layer(icon_colored(icons::X, MARK_STROKE, move |_| failed_color).size(size * MARK_RATIO))
             .opacity(failed_opacity)
             .scale(failed_scale)
             .transition(Spring::bouncy());
@@ -147,6 +147,11 @@ pub fn status_glyph(status: Memo<Status>, look: Look) -> impl View + Styled {
         .bg(bind(move |runtime| match look {
             Look::Disc => status.get(runtime).disc(),
             Look::Bare => TRANSPARENT,
+        }))
+        .border(1.0)
+        .border_color(bind(move |runtime| match (look, status.get(runtime)) {
+            (Look::Disc, Status::Waiting(_)) => WAITING_RIM,
+            _ => TRANSPARENT,
         }))
         .role(Role::Image)
         .label(bind(move |runtime| status.get(runtime).spoken().to_owned()))

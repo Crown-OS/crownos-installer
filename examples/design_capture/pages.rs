@@ -5,13 +5,14 @@ use anyhow::{Context as _, ensure};
 use capture::Carrier;
 use crowntest::{Role, role};
 
+use crate::engine::ai_level::{AiLevel, ModelSource};
 use crate::engine::exec::{Event, Mode};
 use crate::engine::plan::bytes;
 use crate::machine::{
     crowded_context, iso_context, iso_context_with, windows_context, windows_context_shifted,
 };
 use crate::network::{AccessPoint, Snapshot};
-use crate::oobe::{AiFeatures, WindowsApps};
+use crate::oobe::WindowsApps;
 use crate::session::{
     PAGE_END, click_nth, on, press, scroll_by, scroll_page_to, shoot, sign_in, still,
 };
@@ -27,6 +28,7 @@ pub fn capture_all(carrier: &mut Carrier) -> anyhow::Result<()> {
     partition_editor(carrier)?;
     account(carrier)?;
     apps(carrier)?;
+    ai(carrier)?;
     confirm(carrier)?;
     progress(carrier)?;
     finished(carrier)?;
@@ -40,9 +42,9 @@ fn start(carrier: &mut Carrier) -> anyhow::Result<()> {
         (
             "Start",
             "Intro",
-            "A flashed image opens on Install or Try it out, before the card",
+            "A flashed image opens on Install or Try it out, before the steps",
         ),
-        "Welcome to CrownOS",
+        "Welcome",
     )?;
     let welcome = Wizard::ready(windows_context(false), DRY);
     ensure!(welcome.page == Page::Welcome && welcome.plan().is_some());
@@ -100,7 +102,7 @@ fn offline_list(network: &mut crate::network::Network) {
 }
 
 fn network(carrier: &mut Carrier) -> anyhow::Result<()> {
-    const HEADING: &str = "Connect to the Internet";
+    const HEADING: &str = "Connect to the internet";
     let states: Vec<(&str, &str, Wizard)> = vec![
         (
             "Looking for networks",
@@ -222,13 +224,13 @@ fn network(carrier: &mut Carrier) -> anyhow::Result<()> {
 // ---- Disk and space ----
 
 fn disk(carrier: &mut Carrier) -> anyhow::Result<()> {
-    const HEADING: &str = "Choose a disk";
+    const HEADING: &str = "Select the disk";
     still(
         carrier,
         on(iso_context(), DRY, Page::Disk),
         (
             "Disk",
-            "Choose a disk",
+            "Select the disk",
             "The Windows SSD chosen; a blank drive and an MBR stick beside it",
         ),
         HEADING,
@@ -607,6 +609,38 @@ fn apps(carrier: &mut Carrier) -> anyhow::Result<()> {
     )
 }
 
+fn ai(carrier: &mut Carrier) -> anyhow::Result<()> {
+    const HEADING: &str = "Choose your AI level";
+    for (level, description) in [
+        (
+            AiLevel::Off,
+            "Only the wallpaper depth effect; nothing downloads",
+        ),
+        (AiLevel::Minimal, "Adds the voice tools"),
+        (
+            AiLevel::Advanced,
+            "Adds Suja, screen memory and computer use",
+        ),
+    ] {
+        let mut wizard = on(iso_context(), DRY, Page::Ai);
+        wizard.set_ai_level(level);
+        still(carrier, wizard, ("AI", level.name(), description), HEADING)?;
+    }
+    let mut cloud = on(iso_context(), DRY, Page::Ai);
+    cloud.set_ai_level(AiLevel::Advanced);
+    cloud.set_model_source(ModelSource::CloudAllowed);
+    still(
+        carrier,
+        cloud,
+        (
+            "AI",
+            "Cloud models allowed",
+            "Advanced, with cloud models allowed",
+        ),
+        HEADING,
+    )
+}
+
 // ---- Confirm, install, done ----
 
 fn confirming(context: crate::ui::Context, mode: Mode) -> anyhow::Result<Wizard> {
@@ -618,7 +652,7 @@ fn confirming(context: crate::ui::Context, mode: Mode) -> anyhow::Result<Wizard>
 }
 
 const NO_RETURN: &str = "This is the point of no return";
-/// Far enough to bring the confirmation's step list to the top of the card.
+/// Far enough to bring the confirmation's step list to the top of the column.
 const STEPS_SCROLL: f32 = 250.0;
 
 fn confirm(carrier: &mut Carrier) -> anyhow::Result<()> {
@@ -634,7 +668,7 @@ fn confirm(carrier: &mut Carrier) -> anyhow::Result<()> {
         HEADING,
     )?;
     let mut with_ai = confirming(windows_context(false), Mode::Commit)?;
-    with_ai.set_ai_features(AiFeatures::Enabled);
+    with_ai.set_ai_level(AiLevel::Minimal);
     still(
         carrier,
         with_ai,
@@ -835,7 +869,7 @@ fn finished(carrier: &mut Carrier) -> anyhow::Result<()> {
             "You're all set",
             "Installed beside Windows; the boot menu offers both",
         ),
-        "You're all set",
+        "You’re all set",
     )?;
     still(
         carrier,
@@ -845,7 +879,7 @@ fn finished(carrier: &mut Carrier) -> anyhow::Result<()> {
             "You're all set (image)",
             "Installed from a flashed image: remove the media",
         ),
-        "You're all set",
+        "You’re all set",
     )?;
     still(
         carrier,
@@ -865,9 +899,9 @@ fn finished(carrier: &mut Carrier) -> anyhow::Result<()> {
         (
             "Done",
             "Restarting",
-            "Restart pressed: the card has sunk away over the backdrop",
+            "Restart pressed: the column has sunk away over the backdrop",
         ),
-        "You're all set",
+        "You’re all set",
     )
 }
 

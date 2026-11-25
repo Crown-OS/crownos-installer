@@ -1,15 +1,21 @@
 //! ISO flow only: which free space on the chosen disk CrownOS goes in, and the
 //! partitions it will be split into.
 
-use crownui::kit::{ButtonVariant, Choice, choice_list, icons};
+use crownui::kit::ButtonVariant;
 use crownui::prelude::{Cx, Signal, Styled, View, keyed, vstack};
 
 use crate::engine::btrfs;
 use crate::engine::plan::{BOOT_BYTES, MIN_ROOT_BYTES, Plan, bytes};
 use crate::ui::Wizard;
-use crate::ui::components::{Tone, alert, note, surface};
-use crate::ui::layout::{BLOCK_GAP, PageParts, TILE_GAP, caption, next_pill, nothing, wizard_pill};
-use crate::util::mirror::mirror;
+use crate::ui::components::{
+    Mark, OptionLine, RowSize, Tone, alert, glyph, icon_tile, note, option_row,
+};
+use crate::ui::layout::{
+    BLOCK_GAP, PageParts, caption, choice_grid, next_pill, nothing, wizard_pill,
+};
+
+const TILE: f32 = 48.0;
+const TILE_GLYPH: f32 = 22.0;
 
 /// One free region as the list shows it.
 #[derive(Clone, PartialEq)]
@@ -54,54 +60,60 @@ pub fn build(wizard: Signal<Wizard>) -> PageParts {
         },
     );
 
-    let content =
-        vstack((surface((caption("Free space"), regions)), layout, refusal)).gap(BLOCK_GAP);
+    let content = vstack((
+        caption("Free space").self_center(),
+        regions,
+        layout,
+        refusal,
+    ))
+    .gap(BLOCK_GAP);
 
     PageParts::new(
         "Where should CrownOS go?",
         "Pick the free space to install into.",
     )
     .content(content)
-    .actions((
-        wizard_pill(
-            wizard,
-            "Edit partitions",
-            ButtonVariant::Secondary,
-            Wizard::open_editor,
-        ),
-        next_pill(wizard, |wizard| wizard.plan().is_none()),
+    .leading(wizard_pill(
+        wizard,
+        "Edit partitions",
+        ButtonVariant::Secondary,
+        Wizard::open_editor,
     ))
+    .actions(next_pill(wizard, |wizard| wizard.plan().is_none()))
 }
 
 fn region_list(cx: &mut Cx, wizard: Signal<Wizard>, rows: Vec<RegionRow>) -> impl View + use<> {
-    let starts: Vec<u64> = rows.iter().map(|row| row.start_sector).collect();
-    let chosen_starts = starts.clone();
-    let selected = mirror(
-        cx,
-        wizard,
-        move |wizard| {
-            let chosen = wizard.target.region_start_sector?;
-            starts.iter().position(|start| *start == chosen)
-        },
-        move |wizard, index| {
-            if let Some(start) = index.and_then(|index| chosen_starts.get(index)) {
-                wizard.target.region_start_sector = Some(*start);
-                wizard.restage_plan();
-            }
-        },
-    );
-    let choices = rows.into_iter().map(|row| {
-        let choice = Choice::new(row.title, row.detail).icon(icons::LAYERS);
-        if row.usable {
-            choice
-        } else {
-            choice.disabled()
-        }
-    });
-    choice_list(choices, selected)
-        .grid()
-        .grid_cols(2)
-        .gap(TILE_GAP)
+    let rows: Vec<_> = rows
+        .into_iter()
+        .map(|row| {
+            let start = row.start_sector;
+            let chosen = cx.memo(move |runtime| {
+                wizard.with(runtime, |wizard| {
+                    wizard.target.region_start_sector == Some(start)
+                })
+            });
+            let line = OptionLine {
+                usable: row.usable,
+                ..OptionLine::new(row.title, row.detail)
+            };
+            option_row(
+                line,
+                RowSize::Large,
+                icon_tile(glyph::HARD_DRIVE, TILE, TILE_GLYPH, move |runtime| {
+                    chosen.get(runtime)
+                }),
+                Mark::Radio,
+                chosen,
+                move |cx| {
+                    wizard.update(cx, |wizard| {
+                        wizard.target.region_start_sector = Some(start);
+                        wizard.restage_plan();
+                    });
+                },
+            )
+        })
+        .collect();
+    choice_grid(rows)
 }
 
 /// The partitions the plan creates, in the order they sit on the disk.

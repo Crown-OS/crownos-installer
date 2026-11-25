@@ -244,7 +244,7 @@ fn the_apps_page_comes_before_the_confirmation_and_its_answer_reaches_the_plan()
         wizard.submit_account();
         assert_eq!(wizard.page, Page::Apps);
         assert_eq!(wizard.previous_page(), Some(Page::Account));
-        assert_eq!(wizard.next_page(), Some(Page::Confirm));
+        assert_eq!(wizard.next_page(), Some(Page::Ai));
         assert!(!enables_windows_apps(&wizard));
 
         wizard.set_windows_apps(WindowsApps::Enabled);
@@ -388,6 +388,7 @@ fn every_page_maps_to_a_step_in_both_flows() {
             Page::Partitions,
             Page::Account,
             Page::Apps,
+            Page::Ai,
             Page::Confirm,
             Page::Progress,
             Page::Done,

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::engine::ai_level::{AiLevel, ModelSource};
 use crate::engine::exec::{Event, Mode, Secrets};
 use crate::engine::plan::{IsoInput, Plan, PlanInput, Refusal, plan, plan_iso};
 use crate::engine::probe::Disk;
@@ -35,8 +36,12 @@ pub struct Wizard {
     /// the way out.
     pub editor_return: Option<Page>,
     /// Whether the ISO flow sets up AI acceleration. The Windows flow's payload
-    /// carries its own answer.
+    /// carries its own answer. Follows [`ai_level`](Self::ai_level).
     pub ai_features: AiFeatures,
+    /// How much AI the new system gets.
+    pub ai_level: AiLevel,
+    /// Where the models of the AI features may run.
+    pub model_source: ModelSource,
     /// Whether the new system sets up Wine on its first boot that is online.
     pub windows_apps: WindowsApps,
     /// The web browser the new system uses.
@@ -89,6 +94,7 @@ impl Wizard {
             form,
             target,
             ai_features,
+            ai_level: AiLevel::from(ai_features),
             windows_apps,
             browser,
             developer_tools,
@@ -126,6 +132,8 @@ impl Wizard {
             editor: Editor::default(),
             editor_return: None,
             ai_features: AiFeatures::default(),
+            ai_level: AiLevel::default(),
+            model_source: ModelSource::default(),
             windows_apps: WindowsApps::default(),
             browser: Browser::default(),
             developer_tools: DeveloperTools::default(),
@@ -287,9 +295,14 @@ impl Wizard {
         });
     }
 
-    pub fn set_ai_features(&mut self, ai_features: AiFeatures) {
-        self.ai_features = ai_features;
+    pub fn set_ai_level(&mut self, ai_level: AiLevel) {
+        self.ai_level = ai_level;
+        self.ai_features = ai_level.features();
         self.restage_plan();
+    }
+
+    pub fn set_model_source(&mut self, model_source: ModelSource) {
+        self.model_source = model_source;
     }
 
     pub fn set_windows_apps(&mut self, windows_apps: WindowsApps) {
@@ -392,7 +405,8 @@ impl Wizard {
             (Page::Disk, true) => Page::Space,
             (Page::Space, true) => Page::Account,
             (Page::Account, _) => Page::Apps,
-            (Page::Apps, _) => Page::Confirm,
+            (Page::Apps, _) => Page::Ai,
+            (Page::Ai, _) => Page::Confirm,
             _ => return None,
         })
     }
@@ -410,7 +424,8 @@ impl Wizard {
             (Page::Account, true) => Page::Space,
             (Page::Account, false) => self.via_network(Page::Welcome),
             (Page::Apps, _) => Page::Account,
-            (Page::Confirm, _) => Page::Apps,
+            (Page::Ai, _) => Page::Apps,
+            (Page::Confirm, _) => Page::Ai,
             _ => return None,
         })
     }

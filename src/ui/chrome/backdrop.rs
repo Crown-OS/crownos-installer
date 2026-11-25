@@ -1,89 +1,60 @@
-//! The window's background: four pink ribbons, blurred into a wash, under a
-//! milky veil. Drawn on the GPU from the design's own curves rather than
-//! shipped as a full-screen bitmap.
+//! The window's background: black, with a row of glass columns rising along
+//! its foot, tallest in the middle, each lit from night blue through cyan to
+//! pink. Drawn on the GPU from the design's numbers rather than shipped as a
+//! full-screen bitmap.
 
-use crownui::ext::{DrawCommand, DrawList, Paint, Path, Stroke, Transform};
+use crownui::ext::{Brush, DrawList, GradientStop, Paint};
 use crownui::prelude::{
-    Color, CornerRadii, Point, Rect, Runtime, Size, Styled, View, WHITE, canvas, rgba,
+    Color, CornerRadii, Point, Rect, Runtime, Size, Styled, View, canvas, rgb, rgba,
 };
 
-/// The frame the ribbons were drawn in; they are stretched to the window.
+use crate::ui::palette::NIGHT;
+
+/// The frame the columns were drawn in; they are stretched to the window.
 const DESIGN_SIZE: Size = Size::new(1728.0, 1117.0);
-/// How far the ribbons are softened.
-const BLUR: f32 = 34.0;
-const VEIL: Color = rgba(0xfef6f85c);
+const COLUMN_WIDTH: f32 = 99.69;
+const FIRST_COLUMN_LEFT: f32 = -83.08;
+const COLUMN_EDGE: f32 = 1.0;
+const COLUMN_EDGE_COLOR: Color = rgba(0x0000002e);
 const FADE_IN_OPACITY: f32 = 0.0;
 
-/// One ribbon: where its curve starts, then cubic segments as
-/// `(control, control, end)`, all offset by `origin` into the design frame.
-struct Ribbon {
-    origin: (f32, f32),
-    start: (f32, f32),
-    segments: [[(f32, f32); 3]; 4],
-    width: f32,
-    color: Color,
-}
-
-const RIBBONS: [Ribbon; 4] = [
-    Ribbon {
-        origin: (-176.6, 12.1),
-        start: (2018.64, 44.94),
-        segments: [
-            [(1882.96, 171.68), (1536.02, 501.53), (1358.8, 487.79)],
-            [(1181.57, 474.04), (1001.06, 478.92), (736.07, 742.74)],
-            [(602.71, 875.51), (668.75, 958.34), (483.79, 1108.54)],
-            [(335.82, 1228.7), (114.04, 1328.21), (21.64, 1362.94)],
-        ],
-        width: 123.0,
-        color: rgba(0xef305433),
-    },
-    Ribbon {
-        origin: (-259.2, -121.9),
-        start: (2316.2, 135.96),
-        segments: [
-            [(2162.32, 255.2), (1768.82, 565.53), (1567.81, 552.6)],
-            [(1366.79, 539.67), (1293.09, 452.48), (992.54, 700.69)],
-            [(841.29, 825.6), (785.16, 995.31), (575.37, 1136.62)],
-            [(407.54, 1249.67), (156.0, 1343.28), (51.2, 1375.96)],
-        ],
-        width: 344.0,
-        color: rgba(0xf797a9ad),
-    },
-    Ribbon {
-        origin: (-71.5, -13.8),
-        start: (1901.59, 38.78),
-        segments: [
-            [(1773.59, 153.12), (1583.08, 396.28), (1279.08, 438.28)],
-            [(1113.0, 461.23), (812.09, 522.28), (691.59, 668.28)],
-            [(571.09, 814.28), (628.09, 862.78), (453.59, 998.28)],
-            [(313.99, 1106.68), (104.76, 1196.45), (17.59, 1227.78)],
-        ],
-        width: 104.0,
-        color: rgba(0xfef4f65e),
-    },
-    Ribbon {
-        origin: (-44.9, 12.1),
-        start: (1908.02, 52.95),
-        segments: [
-            [(1780.02, 167.29), (1335.15, 361.87), (1223.51, 486.95)],
-            [(1074.01, 654.45), (1006.51, 531.95), (756.51, 769.95)],
-            [(630.71, 889.72), (634.51, 876.95), (460.02, 1012.45)],
-            [(320.42, 1120.85), (111.18, 1210.62), (24.02, 1241.95)],
-        ],
-        width: 142.0,
-        color: rgba(0xf89eafff),
-    },
+/// Where each column starts and how tall it is, from the middle column out.
+/// The row is symmetrical.
+const HALF_ROW: [(f32, f32); 10] = [
+    (531.91, 790.89),
+    (539.24, 783.44),
+    (583.63, 738.29),
+    (662.81, 657.76),
+    (735.14, 584.18),
+    (774.98, 543.66),
+    (788.37, 530.04),
+    (790.87, 527.50),
+    (791.10, 527.27),
+    (791.11, 527.26),
 ];
 
-impl Ribbon {
-    fn path(&self) -> Path {
-        let at = |(x, y): (f32, f32)| Point::new(x + self.origin.0, y + self.origin.1);
-        self.segments.iter().fold(
-            Path::new().move_to(at(self.start)),
-            |path, [first, second, end]| path.cubic_to(at(*first), at(*second), at(*end)),
-        )
-    }
-}
+/// The light down one column, from its top.
+const GLOW: [(f32, Color); 19] = [
+    (0.0, rgb(0x040404)),
+    (0.074_79, rgb(0x0a0721)),
+    (0.131_93, rgb(0x0f063c)),
+    (0.2, rgb(0x111e5e)),
+    (0.251_26, rgb(0x003a7f)),
+    (0.325_21, rgb(0x0076b2)),
+    (0.387_39, rgb(0x00a2ca)),
+    (0.410_08, rgb(0x3cafcf)),
+    (0.437_82, rgb(0x6cb8d0)),
+    (0.512_61, rgb(0xcdb8c6)),
+    (0.577_31, rgb(0xfb9aac)),
+    (0.673_11, rgb(0xfe4e72)),
+    (0.709_24, rgb(0xf32462)),
+    (0.726_05, rgb(0xec005b)),
+    (0.781_51, rgb(0xdf004d)),
+    (0.857_14, rgb(0x6b0a3f)),
+    (0.882_35, rgb(0x530831)),
+    (0.924_37, rgba(0x2a0619b5)),
+    (1.0, rgba(0x04040400)),
+];
 
 /// Fills its parent, fading in once on the first frame.
 pub fn backdrop() -> impl View + Styled {
@@ -94,56 +65,105 @@ pub fn backdrop() -> impl View + Styled {
         .enter(|style| style.opacity(FADE_IN_OPACITY))
 }
 
+/// Each column's left edge, top and height in the design frame, left to right.
+fn columns() -> impl Iterator<Item = (f32, f32, f32)> {
+    let middle = HALF_ROW.len() - 1;
+    (0..2 * HALF_ROW.len() - 1).map(move |index| {
+        let (top, height) = HALF_ROW[index.abs_diff(middle)];
+        let left = FIRST_COLUMN_LEFT + index as f32 * COLUMN_WIDTH;
+        (left, top, height)
+    })
+}
+
+fn glow(top: f32, bottom: f32) -> Brush {
+    Brush::LinearGradient {
+        start: Point::new(0.0, top),
+        end: Point::new(0.0, bottom),
+        stops: GLOW
+            .iter()
+            .map(|&(offset, color)| GradientStop { offset, color })
+            .collect(),
+    }
+}
+
 fn paint(_: &mut Runtime, size: Size, list: &mut DrawList) {
     let window = Rect::new(Point::new(0.0, 0.0), size);
-    list.fill(window, CornerRadii::ZERO, WHITE);
+    list.fill(window, CornerRadii::ZERO, NIGHT);
+    let scale_x = size.width / DESIGN_SIZE.width;
+    let scale_y = size.height / DESIGN_SIZE.height;
     list.save();
     list.clip(window, CornerRadii::ZERO);
-    list.transform(Transform::scale(
-        size.width / DESIGN_SIZE.width,
-        size.height / DESIGN_SIZE.height,
-    ));
-    for ribbon in &RIBBONS {
-        list.push(DrawCommand::StrokePath(
-            ribbon.path(),
-            Stroke::new(ribbon.width),
+    for (left, top, height) in columns() {
+        let column = Rect::from_xywh(
+            left * scale_x,
+            top * scale_y,
+            COLUMN_WIDTH * scale_x,
+            height * scale_y,
+        );
+        list.fill(
+            column,
+            CornerRadii::ZERO,
             Paint {
-                blur: Some(BLUR),
-                ..Paint::solid(ribbon.color)
+                brush: glow(column.min_y(), column.max_y()),
+                blur: None,
             },
-        ));
+        );
+        list.stroke(column, CornerRadii::ZERO, COLUMN_EDGE, COLUMN_EDGE_COLOR);
     }
     list.restore();
-    list.fill(window, CornerRadii::ZERO, VEIL);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crownui::ext::DrawCommand;
 
     #[test]
-    fn every_ribbon_starts_off_the_right_edge_and_ends_off_the_left() {
-        for ribbon in &RIBBONS {
-            let first = ribbon.start.0 + ribbon.origin.0;
-            let last = ribbon.segments[3][2].0 + ribbon.origin.0;
-            assert!(first > DESIGN_SIZE.width * 0.95, "starts at {first}");
-            assert!(last < DESIGN_SIZE.width * 0.05, "ends at {last}");
-        }
+    fn the_row_spans_the_window_and_peaks_in_the_middle() {
+        let row: Vec<_> = columns().collect();
+        assert_eq!(row.len(), 19);
+        let (first_left, ..) = row[0];
+        let (last_left, ..) = row[row.len() - 1];
+        assert!(first_left < 0.0);
+        assert!(last_left + COLUMN_WIDTH > DESIGN_SIZE.width);
+        let tallest = row
+            .iter()
+            .min_by(|first, second| first.1.total_cmp(&second.1))
+            .map(|column| column.0);
+        assert_eq!(tallest, Some(row[9].0));
+        assert_eq!(row[0].1, row[18].1, "the row is symmetrical");
     }
 
     #[test]
-    fn the_wash_is_painted_under_the_veil_and_clipped_to_the_window() {
+    fn every_column_runs_past_the_foot_of_the_window() {
+        assert!(
+            columns().all(|(_, top, height)| top + height > DESIGN_SIZE.height),
+            "no column ends in sight"
+        );
+    }
+
+    #[test]
+    fn the_glow_fades_out_at_both_ends() {
+        assert_eq!(GLOW[0].1, NIGHT);
+        assert_eq!(GLOW[GLOW.len() - 1].1.a, 0.0);
+        assert!(GLOW.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    }
+
+    #[test]
+    fn the_night_is_painted_under_the_columns() {
         let mut list = DrawList::new();
         let mut runtime = Runtime::new();
         paint(&mut runtime, Size::new(1000.0, 700.0), &mut list);
         let commands = list.commands();
-        let strokes = commands
-            .iter()
-            .filter(|command| matches!(command, DrawCommand::StrokePath(_, _, paint) if paint.blur == Some(BLUR)))
-            .count();
-        assert_eq!(strokes, RIBBONS.len());
         assert!(
-            matches!(commands.last(), Some(DrawCommand::FillRect(_, paint)) if paint.brush == crownui::ext::Brush::Solid(VEIL))
+            matches!(commands.first(), Some(DrawCommand::FillRect(_, paint)) if paint.brush == Brush::Solid(NIGHT))
         );
+        let gradients = commands
+            .iter()
+            .filter(|command| {
+                matches!(command, DrawCommand::FillRect(_, paint) if matches!(paint.brush, Brush::LinearGradient { .. }))
+            })
+            .count();
+        assert_eq!(gradients, 19);
     }
 }

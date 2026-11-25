@@ -18,8 +18,8 @@ use crate::engine::exec::{Event, Mode, Secrets, execute};
 use crate::engine::plan::Plan;
 use crate::engine::probe::RealSystem;
 use crate::ui::components::{PILL_HEIGHT, Status, Tone, alert, meter, percent, stage_row, surface};
-use crate::ui::layout::{BLOCK_GAP, PageParts, caption, muted, nothing, restart_pill, tiles};
-use crate::ui::palette::{BRAND, INK, OUTLINE};
+use crate::ui::layout::{PageParts, muted, nothing, restart_pill, tiles};
+use crate::ui::palette::{FOREGROUND, GLASS, SECONDARY};
 use crate::ui::{InstallProgress, Wizard};
 use crate::util::worker::{MessageProxy, spawn_worker};
 
@@ -27,42 +27,44 @@ use crate::util::worker::{MessageProxy, spawn_worker};
 pub const WINDOW: usize = 4;
 /// How many finished steps stay in view above the running one.
 const TRAILING: usize = 2;
-const PERCENT_SIZE: f32 = 24.0;
-const LABEL_SIZE: f32 = 15.0;
+const HEADLINE_SIZE: f32 = 24.0;
+const HEADLINE_TRACKING: f32 = -0.24;
+const HEADLINE_GAP: f32 = 6.0;
+const METER_WIDTH: f32 = 838.0;
+const SECTION_GAP: f32 = 28.0;
 const LOG_SIZE: f32 = 11.0;
 const ROW_RISE: f32 = 10.0;
+const CHIP_PADDING: f32 = 22.0;
+const CHIP_GLYPH: f32 = 16.0;
+const CHIP_LABEL_SIZE: f32 = 15.0;
 
 pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
     start_install(cx, wizard);
     let fraction =
         cx.memo(move |runtime| wizard.with(runtime, |wizard| wizard.progress.fraction()));
 
-    let headline = surface((
-        hstack((
-            vstack((
-                text(bind(move |runtime| {
-                    wizard.with(runtime, |wizard| headline(&wizard.progress))
-                }))
-                .text_size(LABEL_SIZE)
-                .font_semibold()
-                .text_color(INK)
-                .truncate(),
-                muted(bind(move |runtime| {
-                    wizard.with(runtime, |wizard| detail(&wizard.progress))
-                }))
-                .truncate(),
-            ))
-            .gap(4.0)
-            .flex_1(),
-            text(bind(move |runtime| percent(fraction.get(runtime))))
-                .text_size(PERCENT_SIZE)
-                .font_semibold()
-                .text_color(BRAND),
-        ))
-        .gap(16.0)
-        .items_center(),
-        meter("Overall progress", fraction),
-    ));
+    let headline = vstack((
+        text(bind(move |runtime| {
+            wizard.with(runtime, |wizard| headline(&wizard.progress))
+        }))
+        .text_size(HEADLINE_SIZE)
+        .font_medium()
+        .tracking(HEADLINE_TRACKING)
+        .text_color(FOREGROUND)
+        .text_center()
+        .truncate(),
+        muted(bind(move |runtime| {
+            let share = percent(fraction.get(runtime));
+            wizard.with(runtime, |wizard| {
+                format!("{share} · {}", detail(&wizard.progress))
+            })
+        }))
+        .text_center()
+        .truncate(),
+    ))
+    .gap(HEADLINE_GAP)
+    .items_center()
+    .w_full();
 
     let window = keyed(
         move |runtime| {
@@ -122,7 +124,7 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
                     })
                 }))
                 .text_size(LOG_SIZE)
-                .text_color(INK),
+                .text_color(SECONDARY),
             )
             .boxed()
         },
@@ -143,16 +145,19 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
 
     PageParts::new(
         "Installing CrownOS",
-        "Sit back and relax — this takes a few minutes.",
+        "Sit back and relax. This takes a few minutes.",
     )
     .content(
         vstack((
             headline,
+            meter("Overall progress", fraction)
+                .max_w(METER_WIDTH)
+                .self_center(),
             failure,
-            surface((caption("Installation steps"), window)),
+            window,
             log,
         ))
-        .gap(BLOCK_GAP),
+        .gap(SECTION_GAP),
     )
     .actions(action)
 }
@@ -160,19 +165,20 @@ pub fn build(cx: &mut Cx, wizard: Signal<Wizard>) -> PageParts {
 /// The quiet reminder where a button would be.
 fn keep_on() -> impl View {
     hstack((
-        icon_colored(icons::TRIANGLE_ALERT, 2.0, |_| BRAND).size(16.0),
+        icon_colored(icons::PLUG, 2.0, |_| FOREGROUND).size(CHIP_GLYPH),
         text("Keep your computer on")
-            .text_size(14.0)
-            .text_color(INK),
+            .text_size(CHIP_LABEL_SIZE)
+            .font_medium()
+            .text_color(FOREGROUND),
     ))
-    .gap(8.0)
+    .gap(10.0)
     .items_center()
     .h(PILL_HEIGHT)
-    .px(20.0)
+    .px(CHIP_PADDING)
     .rounded(PILL_HEIGHT / 2.0)
-    .bg(WHITE)
+    .bg(GLASS)
     .border(1.0)
-    .border_color(OUTLINE)
+    .border_color(WHITE.with_alpha_factor(0.22))
     .role(Role::Group)
     .label("Keep your computer on")
     .enter(|style| style.opacity(0.0))

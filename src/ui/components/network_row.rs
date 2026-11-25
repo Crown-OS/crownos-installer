@@ -1,42 +1,48 @@
-//! One network in the Wi-Fi list: its glyph, name and security, and a
-//! trailing mark that morphs from a spinner into a check as it connects.
+//! One network in the Wi-Fi list: a Wi-Fi tile, its name and security, and a
+//! trailing mark that morphs from a spinner into a check as it connects. The
+//! chosen or connected network sits on its own glass.
 
-use crownui::kit::icon_colored;
 use crownui::prelude::{
-    Color, CursorIcon, Cx, Listeners, Memo, Role, Semantic, Spring, Styled, View, WHITE, bind,
-    hstack, rgb, rgba, text, vstack,
+    Color, CursorIcon, Cx, Listeners, Memo, Role, Runtime, Semantic, Spring, Styled, TRANSPARENT,
+    View, bind, hstack, icon, rgb, rgba, text, vstack,
 };
 
+use super::glyph;
+use super::icon_tile::icon_tile;
 use super::status_glyph::{Look, Status, status_glyph};
-use crate::ui::palette::{ACCENT, BLUSH};
+use crate::ui::palette::{FOREGROUND, GLASS};
 
-const HEIGHT: f32 = 58.0;
-const RADIUS: f32 = 12.0;
-const PADDING: f32 = 14.0;
-const GAP: f32 = 10.0;
-const ICON: f32 = 24.0;
-const ICON_STROKE: f32 = 1.8;
-const TITLE_SIZE: f32 = 14.0;
-const DETAIL_SIZE: f32 = 12.0;
-const LINE_GAP: f32 = 2.0;
+const RADIUS: f32 = 33.0;
+const PADDING_Y: f32 = 12.0;
+const PADDING_LEFT: f32 = 13.0;
+const PADDING_RIGHT: f32 = 24.0;
+const GAP: f32 = 14.0;
+const TILE: f32 = 40.0;
+const TILE_GLYPH: f32 = 20.0;
+const TITLE_SIZE: f32 = 17.0;
+const DETAIL_SIZE: f32 = 14.0;
+const LINE_GAP: f32 = 3.0;
+const TRAILING: f32 = 18.0;
+const LOCK: f32 = 16.0;
 const UNUSABLE_OPACITY: f32 = 0.45;
-const PRIMARY: Color = rgb(0x17151f);
-const MUTED: Color = rgb(0x8b8996);
-const ICON_COLOR: Color = rgb(0x3d3b47);
-const HAIRLINE: Color = rgba(0x1b1b2a12);
+const FOCUS_RING: f32 = 2.0;
+const DETAIL: Color = rgb(0xc7c7cf);
+const LOCK_COLOR: Color = rgba(0xffffffb3);
+const LIT_RIM: Color = rgba(0xffffff1c);
 
 /// What a row shows about one network.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NetworkLine {
     pub ssid: String,
     pub detail: String,
-    pub glyph: &'static str,
+    /// Whether joining needs a password.
+    pub secured: bool,
     /// Whether the installer can join it at all.
     pub usable: bool,
 }
 
-/// A row for `line`, highlighted while `selected` holds, trailing whatever
-/// `link` says about joining it.
+/// A row for `line`, lit while `selected` holds or it is connected, trailing
+/// whatever `link` says about joining it.
 pub fn network_row(
     line: NetworkLine,
     selected: Memo<bool>,
@@ -44,55 +50,75 @@ pub fn network_row(
     choose: impl Fn(&mut Cx) + 'static,
 ) -> impl View + Styled {
     let usable = line.usable;
+    let secured = line.secured;
+    let lit =
+        move |runtime: &mut Runtime| selected.get(runtime) || link.get(runtime) == Status::Done;
+    let waiting = move |runtime: &mut Runtime| matches!(link.get(runtime), Status::Waiting(_));
+    let lock = icon(glyph::LOCK, LOCK_COLOR)
+        .size(LOCK)
+        .absolute()
+        .opacity(bind(move |runtime| {
+            if secured && waiting(runtime) {
+                1.0
+            } else {
+                0.0
+            }
+        }));
     hstack((
-        icon_colored(line.glyph, ICON_STROKE, |_| ICON_COLOR)
-            .size(ICON)
-            .shrink(0.0),
+        icon_tile(glyph::WIFI, TILE, TILE_GLYPH, lit),
         vstack((
             text(line.ssid.clone())
                 .text_size(TITLE_SIZE)
-                .text_color(PRIMARY)
+                .font_medium()
+                .tracking(-TITLE_SIZE / 100.0)
+                .text_color(FOREGROUND)
                 .truncate(),
             text(line.detail)
                 .text_size(DETAIL_SIZE)
-                .text_color(MUTED)
+                .text_color(DETAIL)
                 .truncate(),
         ))
         .gap(LINE_GAP)
-        .flex_1(),
-        status_glyph(link, Look::Bare),
+        .flex_1()
+        .min_w(0.0),
+        vstack((status_glyph(link, Look::Bare), lock))
+            .relative()
+            .size(TRAILING)
+            .shrink(0.0)
+            .items_center()
+            .justify_center(),
     ))
     .gap(GAP)
     .items_center()
-    .h(HEIGHT)
-    .px(PADDING)
+    .py(PADDING_Y)
+    .pl(PADDING_LEFT)
+    .pr(PADDING_RIGHT)
     .w_full()
     .rounded(RADIUS)
-    .bg(bind(
-        move |runtime| if selected.get(runtime) { BLUSH } else { WHITE },
-    ))
     .border(1.0)
-    .border_color(bind(move |runtime| {
-        if selected.get(runtime) {
-            ACCENT.start
-        } else {
-            HAIRLINE
-        }
-    }))
+    .bg(bind(
+        move |runtime| if lit(runtime) { GLASS } else { TRANSPARENT },
+    ))
+    .border_color(bind(
+        move |runtime| {
+            if lit(runtime) { LIT_RIM } else { TRANSPARENT }
+        },
+    ))
     .opacity(if usable { 1.0 } else { UNUSABLE_OPACITY })
     .cursor(CursorIcon::Pointer)
+    .focus_visible(|style| style.ring(FOCUS_RING, FOREGROUND))
     .role(Role::Button)
     .label(line.ssid)
     .value(bind(move |runtime| {
         spoken(link.get(runtime), selected.get(runtime)).to_owned()
     }))
     .disabled(!usable)
+    .focusable(usable)
     .on_click(move |cx, _| {
         if usable {
             choose(cx);
         }
     })
-    .hover(|style| style.scale(1.01))
     .transition(Spring::snappy())
 }
 
@@ -111,7 +137,7 @@ fn spoken(link: Status, selected: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use crowntest::{Role, TestApp, role};
-    use crownui::kit::{icons, provide_theme};
+    use crownui::kit::provide_theme;
     use crownui::prelude::component;
 
     use super::*;
@@ -121,7 +147,7 @@ mod tests {
         NetworkLine {
             ssid: ssid.to_owned(),
             detail: "WPA2 Security".to_owned(),
-            glyph: icons::WIFI,
+            secured: true,
             usable,
         }
     }
@@ -182,12 +208,11 @@ mod tests {
     #[test]
     fn rows_are_the_design_height() {
         let mut app = list();
-        assert_eq!(
-            app.find(role(Role::Button).name("Home Wi-Fi"))
-                .bounds
-                .size
-                .height,
-            HEIGHT
-        );
+        let height = app
+            .find(role(Role::Button).name("Home Wi-Fi"))
+            .bounds
+            .size
+            .height;
+        assert!((height - (TILE + 2.0 * PADDING_Y)).abs() < 2.0, "{height}");
     }
 }

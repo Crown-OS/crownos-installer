@@ -1,28 +1,46 @@
 //! The OOBE design's colours, and the kit theme they sit on.
 //!
-//! The design is drawn in one palette — light, with the pink accent — so the
-//! installer provides that theme rather than the configured one: a dark card
-//! over the pink backdrop is a combination nobody designed.
+//! The design is drawn in one palette: white type and glass over a black
+//! window, with the colour kept for the glow along the foot. The installer
+//! provides that theme rather than the configured one.
 
 use crownui::kit::{GradientStops, Theme, ThemeMode};
-use crownui::prelude::{Color, rgb, rgba};
+use crownui::prelude::{Color, WHITE, rgb, rgba};
 
-/// Headings and the step label.
-pub const INK: Color = rgb(0x25171a);
-/// Subtitles and supporting lines on the intro page.
-pub const SUBDUED: Color = rgb(0x6f6f6f);
-/// Lit progress, focus rings, the selected radio, success badges.
-pub const BRAND: Color = rgb(0xef3054);
-/// Progress segments not reached yet.
-pub const TRACK: Color = rgb(0xd2d2d2);
-/// The hairline around white surfaces on the card.
-pub const OUTLINE: Color = rgba(0xb0b0b066);
-/// A selected option tile's fill.
-pub const BLUSH: Color = rgb(0xfef0f2);
-/// The pink accent, top to bottom.
-pub const ACCENT: GradientStops = GradientStops::new(rgb(0xf472b6), rgb(0xdb2777));
+/// The window behind everything.
+pub const NIGHT: Color = rgb(0x040404);
+/// Headings, names and lit marks.
+pub const FOREGROUND: Color = WHITE;
+/// Type drawn on a light fill.
+pub const INK: Color = rgb(0x040404);
+/// Subtitles and field captions.
+pub const SUBDUED: Color = rgb(0xaaaaaa);
+/// Supporting lines under a name.
+pub const SECONDARY: Color = rgba(0xffffffc7);
+/// A glass surface at rest.
+pub const GLASS: Color = rgba(0x08080980);
+/// A glass surface that is chosen or has focus.
+pub const GLASS_LIT: Color = rgba(0x0808099e);
+/// The hairline around glass at rest.
+pub const HAIRLINE: Color = rgba(0xffffff1f);
+/// The hairline around chosen glass.
+pub const HAIRLINE_LIT: Color = rgba(0xffffff52);
+/// An icon tile that is not lit.
+pub const TILE: Color = rgba(0xffffff0f);
+/// Bars and steps not reached yet.
+pub const RAIL: Color = rgb(0x5c5c5c);
+/// The empty part of a progress bar.
+pub const TROUGH: Color = rgba(0xffffff14);
+/// Something that stopped the install.
+pub const DANGER: Color = rgb(0xff5a76);
+/// The light pill, top to bottom.
+pub const LIGHT: GradientStops = GradientStops::new(rgb(0xf5f5f7), rgb(0xd2d2d8));
+/// The rim of the light pill.
+pub const LIGHT_RIM: Color = rgb(0xc2c2c9);
 
 /// The kit theme every page is drawn with.
 pub const fn oobe_theme() -> Theme {
-    Theme::with_stops(ThemeMode::Light, ACCENT)
+    let mut theme = Theme::with_stops(ThemeMode::Dark, LIGHT);
+    theme.text.on_accent = INK;
+    theme
 }
