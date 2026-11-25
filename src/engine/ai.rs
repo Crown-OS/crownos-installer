@@ -1,10 +1,11 @@
 //! The on-device AI stack a machine gets, decided from its accelerators.
 //!
-//! Each backend is one `crownos-ai-*` meta-package. The CPU and NVIDIA metas
-//! are bundled and installed offline with the base system; the vendor runtimes
-//! too large to bundle are fetched over the network on a best effort basis.
-//! Without one, the installed system runs the same effects on the next backend
-//! down [`AiPlan::backends`].
+//! Each backend is one `crownos-ai-*` meta-package, an optional package of the
+//! CrownOS repository. The ISO carries none of them: the install downloads the
+//! ones for this machine with the other online packages, on a best effort
+//! basis, and `crownos-setup` installs the missing ones when the network comes
+//! up. Without one, the installed system runs the same effects on the next
+//! backend down [`AiPlan::backends`].
 
 use std::fmt::Write as _;
 
@@ -62,23 +63,16 @@ impl Backend {
         }
     }
 
-    /// The meta-package that installs this backend, and whether the live image
-    /// bundles it.
-    fn package(self) -> (&'static str, Bundled) {
+    /// The meta-package that installs this backend.
+    fn package(self) -> &'static str {
         match self {
-            Self::Maxine => (NVIDIA_META, Bundled::Offline),
-            Self::Cpu => (CPU_META, Bundled::Offline),
-            Self::Cuda => (NVIDIA_CUDA_META, Bundled::Online),
-            Self::MiGraphX | Self::VitisAi => (AMD_META, Bundled::Online),
-            Self::OpenVino => (INTEL_META, Bundled::Online),
+            Self::Maxine => NVIDIA_META,
+            Self::Cpu => CPU_META,
+            Self::Cuda => NVIDIA_CUDA_META,
+            Self::MiGraphX | Self::VitisAi => AMD_META,
+            Self::OpenVino => INTEL_META,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Bundled {
-    Offline,
-    Online,
 }
 
 /// What AI acceleration is installed, and how.
@@ -90,27 +84,17 @@ pub struct AiPlan {
 }
 
 impl AiPlan {
-    fn packages(&self, bundled: Bundled) -> Vec<&'static str> {
+    /// The meta-packages of the backends, downloaded with the other online
+    /// packages.
+    pub fn packages(&self) -> Vec<&'static str> {
         let mut packages: Vec<&'static str> = self
             .backends
             .iter()
             .map(|backend| backend.package())
-            .filter(|(_, how)| *how == bundled)
-            .map(|(package, _)| package)
             .collect();
         packages.sort_unstable();
         packages.dedup();
         packages
-    }
-
-    /// Installed with the base system, from the live image's offline repository.
-    pub fn offline_packages(&self) -> Vec<&'static str> {
-        self.packages(Bundled::Offline)
-    }
-
-    /// Fetched from the network once the repositories are configured.
-    pub fn online_packages(&self) -> Vec<&'static str> {
-        self.packages(Bundled::Online)
     }
 
     fn uses_maxine(&self) -> bool {
@@ -140,19 +124,14 @@ impl AiPlan {
         config
     }
 
-    /// Writes the config, then fetches what could not be bundled. A fetch that
-    /// fails leaves the system on a slower backend, never without one.
+    /// Writes the config, then fetches the Maxine SDK when the NVIDIA meta is
+    /// installed. Runs after the online packages: a fetch that fails leaves the
+    /// system on a slower backend, never without one.
     pub fn commands(&self, root: &str) -> Vec<Cmd> {
         let mut commands = vec![Cmd::WriteFile {
             path: format!("{root}{AI_CONFIG_PATH}"),
             contents: self.config(),
         }];
-        let online = self.online_packages();
-        if !online.is_empty() {
-            let mut args = vec!["-Syu", "--needed", "--noconfirm"];
-            args.extend(online);
-            commands.push(Cmd::best_effort(Cmd::chroot(root, "pacman", &args)));
-        }
         if self.uses_maxine() {
             commands.push(Cmd::best_effort(Cmd::chroot(root, MAXINE_FETCH, &[])));
         }
@@ -198,20 +177,18 @@ mod tests {
     fn no_accelerator_means_cpu_only_and_nothing_to_fetch() {
         let plan = ai_plan(&[]);
         assert_eq!(plan.backends, [Backend::Cpu]);
-        assert_eq!(plan.offline_packages(), [CPU_META]);
-        assert!(plan.online_packages().is_empty());
+        assert_eq!(plan.packages(), [CPU_META]);
         assert_eq!(plan.commands("/mnt").len(), 1);
     }
 
     #[test]
-    fn a_turing_or_later_nvidia_gpu_gets_the_driver_and_maxine_offline() {
+    fn a_turing_or_later_nvidia_gpu_gets_the_driver_and_maxine() {
         let plan = ai_plan(&[RTX_4090]);
         assert_eq!(
             plan.backends,
             [Backend::Maxine, Backend::Cuda, Backend::Cpu]
         );
-        assert_eq!(plan.offline_packages(), [CPU_META, NVIDIA_META]);
-        assert_eq!(plan.online_packages(), [NVIDIA_CUDA_META]);
+        assert_eq!(plan.packages(), [CPU_META, NVIDIA_META, NVIDIA_CUDA_META]);
         assert!(
             plan.commands("/mnt")
                 .iter()
@@ -232,7 +209,7 @@ mod tests {
             device(AcceleratorVendor::Intel, AcceleratorKind::Npu, 0x7d1d),
         ]);
         assert_eq!(plan.backends, [Backend::OpenVino, Backend::Cpu]);
-        assert_eq!(plan.online_packages(), [INTEL_META]);
+        assert_eq!(plan.packages(), [CPU_META, INTEL_META]);
     }
 
     #[test]
@@ -252,7 +229,10 @@ mod tests {
                 Backend::Cpu
             ]
         );
-        assert_eq!(plan.online_packages(), [AMD_META, NVIDIA_CUDA_META]);
+        assert_eq!(
+            plan.packages(),
+            [AMD_META, CPU_META, NVIDIA_META, NVIDIA_CUDA_META]
+        );
     }
 
     #[test]

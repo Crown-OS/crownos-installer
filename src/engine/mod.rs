@@ -40,6 +40,7 @@ pub mod btrfs;
 pub mod disks;
 pub mod exec;
 pub mod graphics;
+pub mod online;
 pub mod plan;
 pub mod probe;
 pub mod repos;

@@ -43,6 +43,7 @@ use super::base;
 use super::boot;
 use super::btrfs;
 use super::disks::{self, Filesystem};
+use super::online;
 use super::plan::{BOOT_FSLABEL, Plan, Role, Step};
 use super::probe::System;
 use super::setup;
@@ -573,6 +574,8 @@ pub fn commands_for(plan: &Plan, secrets: &Secrets, step: &Step) -> Vec<Cmd> {
         ],
 
         Step::InstallBaseSystem { root, packages } => vec![base::bootstrap(root, packages)],
+
+        Step::InstallOnlinePackages { root, packages } => online::commands(root, packages),
 
         Step::ConfigureAiAcceleration { root, plan } => plan.commands(root),
 

@@ -25,6 +25,10 @@ pub const REPO_KEY_UID: &str = "packages@crownos.org";
 /// the complete set of CrownOS components an installed system must have.
 pub const MANIFEST_LIVE_PATH: &str = "/usr/share/crownos/manifest.toml";
 
+/// The base system of every install, from crownos-iso's `packages/`: one name
+/// on each line. The offline mirror carries each of them.
+pub const INSTALL_BASE_LIVE_PATH: &str = "/usr/share/crownos/install-base.packages";
+
 /// Installed whatever the manifest says: the snapshot stack, the boot loader,
 /// the system defaults with the boot recovery hooks, the release identity and
 /// the key the repository is signed with.
@@ -83,38 +87,30 @@ const AUTOLOGIN_DROP_IN: &str = "/etc/systemd/system/getty@tty1.service.d/autolo
 /// The kernel package, and the name of its image and initramfs.
 pub const KERNEL: &str = "linux-cachyos";
 
-/// Deliberately short: the set that makes the machine boot, reach the network
-/// and let a user log in. The desktop comes from the published manifest.
-const BASE_PACKAGES: &[&str] = &[
-    "base",
-    "linux-firmware",
-    "mkinitcpio",
-    "sudo",
-    "networkmanager",
-    "efibootmgr",
-    "dosfstools",
-    "e2fsprogs",
-    "nano",
-    "zram-generator",
-];
-
 const BTRFS_PACKAGE: &str = "btrfs-progs";
 
 const REPO_KEY_PATH: &str = "/etc/pacman.d/crownos-archive-keyring.asc";
 
 const PACMAN_GNUPG_DIR: &str = "/etc/pacman.d/gnupg";
 
-/// The packages `pacstrap` installs: the base, and every CrownOS package the
-/// manifest `published`. crownos-iso's `profile/install.packages` must name
-/// every one of them, or the live image cannot install offline.
-pub fn packages(published: &[String]) -> Vec<String> {
-    let mut packages: Vec<String> = BASE_PACKAGES
+/// The packages `pacstrap` installs: the image's base system, the packages
+/// that the install steps need, and every CrownOS package the manifest
+/// `published`, except the `online` ones that the image does not carry. The
+/// steps' own packages must be in crownos-iso's `packages/system.list` or
+/// `packages/mirror.list`, or the live image cannot install offline.
+pub fn packages(install_base: &[String], published: &[String], online: &[String]) -> Vec<String> {
+    let mut packages: Vec<String> = [KERNEL, BTRFS_PACKAGE]
         .iter()
-        .chain(&[KERNEL, BTRFS_PACKAGE])
         .chain(repos::PACKAGES)
         .chain(REQUIRED_CROWNOS)
         .map(|name| (*name).to_owned())
-        .chain(published.iter().cloned())
+        .chain(install_base.iter().cloned())
+        .chain(
+            published
+                .iter()
+                .filter(|name| !online.contains(name))
+                .cloned(),
+        )
         .collect();
     packages.sort_unstable();
     packages.dedup();
@@ -249,13 +245,22 @@ mod tests {
     #[test]
     fn every_install_gets_the_recovery_stack_and_the_published_packages() {
         let published = ["crownbar".to_owned(), "crownbar".to_owned()];
-        let packages = packages(&published);
+        let packages = packages(&["base".to_owned()], &published, &[]);
         for expected in REQUIRED_CROWNOS.iter().chain(&[BTRFS_PACKAGE, KERNEL]) {
             assert!(packages.iter().any(|p| p == expected), "{expected} missing");
         }
         assert_eq!(packages.iter().filter(|p| *p == "crownbar").count(), 1);
         assert!(!packages.iter().any(|p| p == "crownos-desktop"));
+        assert!(packages.iter().any(|p| p == "base"));
         assert!(packages.is_sorted());
+    }
+
+    #[test]
+    fn online_packages_are_not_pacstrapped() {
+        let published = ["crownbar".to_owned(), "crownos-voice".to_owned()];
+        let packages = packages(&[], &published, &["crownos-voice".to_owned()]);
+        assert!(packages.iter().any(|p| p == "crownbar"));
+        assert!(!packages.iter().any(|p| p == "crownos-voice"));
     }
 
     #[test]

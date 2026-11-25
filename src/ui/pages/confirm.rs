@@ -81,11 +81,11 @@ fn point_of_no_return(plan: &Plan, dry_run: bool) -> impl View + use<> {
 }
 
 /// What runs the AI features here, and the licence that comes with NVIDIA
-/// Maxine. Only when the live image sets AI acceleration up and AI is on.
+/// Maxine. Only when the release ships the AI packages and AI is on.
 fn acceleration(cx: &mut Cx, wizard: Signal<Wizard>) -> Option<impl View + use<>> {
     let backends = wizard.with_untracked(cx, |wizard| {
         let context = wizard.context()?;
-        (context.snapshot.ai_bundled && wizard.ai_features == AiFeatures::Enabled)
+        (context.snapshot.ai_shipped && wizard.ai_features == AiFeatures::Enabled)
             .then(|| ai_plan(&context.snapshot.accelerators).backends)
     })?;
     Some(note(Tone::Info, acceleration_summary(&backends)))

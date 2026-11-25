@@ -3,7 +3,7 @@
 //! Mesa and the 64-bit Vulkan drivers come with the desktop. This adds the
 //! 32-bit drivers Steam and Wine need, the NVIDIA driver the GPU supports and
 //! the hybrid-graphics tools. Everything but the NVIDIA 580 driver is bundled
-//! on the live image, so crownos-iso's `profile/install.packages` must name
+//! on the live image, so crownos-iso's `packages/drivers.list` must name
 //! every package in the offline lists below.
 
 use crate::util::pci::{Accelerator, AcceleratorVendor, NvidiaGeneration};

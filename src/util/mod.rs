@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod meminfo;
 pub mod mirror;
 pub mod network;
+pub mod package_list;
 pub mod pci;
 pub mod png;
 pub mod preset;

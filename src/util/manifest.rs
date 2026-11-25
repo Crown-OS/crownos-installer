@@ -1,9 +1,10 @@
-//! Reading the release version and the package list out of a published
+//! Reading the release version and the package lists out of a published
 //! CrownOS manifest.
 //!
-//! Only the top-level `version = "..."` and `packages = [...]` keys are read.
-//! The array is the complete set an installed system must have. Everything
-//! after the first table header (`[[package]]` and the like) is ignored.
+//! The top-level `version = "..."`, `packages = [...]` and `online = [...]`
+//! keys are read. `packages` is the complete set an installed system must
+//! have; `online` names the ones that the ISO does not carry. Only
+//! [`ships_package`] reads the `[[package]]` tables after them.
 
 /// The channel of a testing build, whose version is not a plain `X.Y.Z`.
 const TESTING_CHANNEL: &str = "testing";
@@ -34,7 +35,27 @@ pub fn channel_for(version: &str) -> String {
 /// is not a pacman package name. A name starting with `-` is refused because it
 /// would reach `pacstrap`'s argument vector as an option.
 pub fn package_names(manifest: &str) -> Option<Vec<String>> {
-    let array = packages_array(manifest)?;
+    names_in_array(manifest, "packages").filter(|names| !names.is_empty())
+}
+
+/// The names in the manifest's top-level `online` array: the packages that an
+/// installed system downloads. Empty when the array is missing or malformed.
+pub fn online_names(manifest: &str) -> Vec<String> {
+    names_in_array(manifest, "online").unwrap_or_default()
+}
+
+/// Whether the release has a package called `name` in its repository, also
+/// one that no install takes by default.
+pub fn ships_package(manifest: &str, name: &str) -> bool {
+    manifest
+        .lines()
+        .map(without_comment)
+        .filter_map(|line| unquote(value_of(line, "name")?.trim()))
+        .any(|listed| listed == name)
+}
+
+fn names_in_array(manifest: &str, key: &str) -> Option<Vec<String>> {
+    let array = array_text(manifest, key)?;
     let names = array
         .split(',')
         .map(str::trim)
@@ -45,14 +66,14 @@ pub fn package_names(manifest: &str) -> Option<Vec<String>> {
                 .map(str::to_owned)
         })
         .collect::<Option<Vec<_>>>()?;
-    (!names.is_empty()).then_some(names)
+    Some(names)
 }
 
-fn packages_array(manifest: &str) -> Option<String> {
+fn array_text(manifest: &str, key: &str) -> Option<String> {
     let mut lines = top_level_lines(manifest);
     let opening = lines
         .by_ref()
-        .find_map(|line| value_of(line, "packages")?.strip_prefix('['))?;
+        .find_map(|line| value_of(line, key)?.strip_prefix('['))?;
     let mut array = String::new();
     for line in std::iter::once(opening).chain(lines) {
         if let Some((inside, _)) = line.split_once(']') {
@@ -101,7 +122,7 @@ fn unquote(item: &str) -> Option<&str> {
         .or_else(|| item.strip_prefix('\'')?.strip_suffix('\''))
 }
 
-fn is_package_name(name: &str) -> bool {
+pub(crate) fn is_package_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
         && name.bytes().all(|byte| {
@@ -161,6 +182,23 @@ mod tests {
     #[test]
     fn a_key_that_only_starts_with_packages_is_not_the_list() {
         assert_eq!(package_names("packages_extra = [\"x\"]\n"), None);
+    }
+
+    #[test]
+    fn the_online_list_is_read_and_may_be_missing() {
+        let manifest =
+            "packages = [\"crownbar\", \"crownos-voice\"]\nonline = [\"crownos-voice\"]\n";
+        assert_eq!(online_names(manifest), ["crownos-voice"]);
+        assert!(online_names("packages = [\"crownbar\"]\n").is_empty());
+        assert!(online_names("online = []\n").is_empty());
+    }
+
+    #[test]
+    fn a_shipped_package_is_found_in_the_package_tables() {
+        let manifest =
+            "packages = [\"crownbar\"]\n[[package]]\nname = \"crownos-ai-cpu\"\nversion = \"1\"\n";
+        assert!(ships_package(manifest, "crownos-ai-cpu"));
+        assert!(!ships_package(manifest, "crownos-ai-amd"));
     }
 
     #[test]

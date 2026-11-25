@@ -41,10 +41,10 @@ use serde::Deserialize;
 
 use crate::util::cpuinfo::{self, Microarch};
 use crate::util::pci::{self, Accelerator};
-use crate::util::{manifest, meminfo};
+use crate::util::{manifest, meminfo, package_list};
 
 use super::ai::CPU_META;
-use super::base::{MANIFEST_LIVE_PATH, OFFLINE_PACMAN_CONF, REPO_KEY_LIVE_PATH};
+use super::base::{INSTALL_BASE_LIVE_PATH, MANIFEST_LIVE_PATH, REPO_KEY_LIVE_PATH};
 use super::setup;
 
 /// Where archiso mounts the medium it booted from.
@@ -182,14 +182,20 @@ pub struct SystemSnapshot {
     /// The CrownOS packages the live image's copy of the published manifest
     /// lists, or `None` when it has no readable one, which is also a refusal.
     pub published_packages: Option<Vec<String>>,
+    /// The packages of that list that the live image does not carry: the
+    /// installed system downloads them.
+    pub published_online: Vec<String>,
     /// The release version of that manifest, which selects the repository
     /// channel the installed system is pinned to. `None` is a refusal.
     pub published_version: Option<String>,
+    /// The base system that the live image's offline mirror carries for every
+    /// install, beside the CrownOS packages.
+    pub install_base_packages: Vec<String>,
     /// Every GPU and NPU on the PCI bus, sorted.
     pub accelerators: Vec<Accelerator>,
-    /// Whether the live image's offline repository carries the AI packages. An
-    /// image built without them cannot offer AI features.
-    pub ai_bundled: bool,
+    /// Whether the release's repository has the AI packages. A release without
+    /// them cannot offer AI features.
+    pub ai_shipped: bool,
 }
 
 impl SystemSnapshot {
@@ -483,14 +489,19 @@ pub fn probe(system: &dyn System) -> Result<SystemSnapshot> {
         published_packages: published_manifest
             .as_deref()
             .and_then(manifest::package_names),
+        published_online: published_manifest
+            .as_deref()
+            .map(manifest::online_names)
+            .unwrap_or_default(),
         published_version: published_manifest.as_deref().and_then(manifest::version),
+        install_base_packages: system
+            .read_file(INSTALL_BASE_LIVE_PATH)
+            .map(|list| package_list::names(&list))
+            .unwrap_or_default(),
         accelerators: read_accelerators(system),
-        ai_bundled: system
-            .run(
-                "pacman",
-                &["--config", OFFLINE_PACMAN_CONF, "-Sp", CPU_META],
-            )
-            .is_ok(),
+        ai_shipped: published_manifest
+            .as_deref()
+            .is_some_and(|manifest| manifest::ships_package(manifest, CPU_META)),
     })
 }
 
@@ -1063,10 +1074,13 @@ pub(crate) mod fixture {
        ]
     }"#;
 
-    /// The live image's manifest: its packages are what an install pacstraps.
+    /// The live image's manifest: its packages, except the online ones, are
+    /// what an install pacstraps. Its repository also has the AI packages.
     pub(crate) const FIXTURE_MANIFEST: &str = "version = \"0.1.12\"\n\
-        packages = [\"crownbar\", \"crowndock\", \"crownos-appstore\", \"crownos-setup\"]\n\
-        [[package]]\nname = \"crownbar\"\nversion = \"0.3.0-1\"\n";
+        packages = [\"crownbar\", \"crowndock\", \"crownos-appstore\", \"crownos-setup\", \"crownos-voice\"]\n\
+        online = [\"crownos-voice\"]\n\
+        [[package]]\nname = \"crownbar\"\nversion = \"0.3.0-1\"\n\
+        [[package]]\nname = \"crownos-ai-cpu\"\nversion = \"0.1.0-1\"\n";
 
     /// A [`FakeSystem`] wired up with the fixtures above.
     pub(crate) fn machine(findmnt: &str) -> FakeSystem {
@@ -1103,10 +1117,6 @@ pub(crate) mod fixture {
                 LSBLK_JSON,
             )
             .with_command("sfdisk --json /dev/sda", sfdisk)
-            .with_command(
-                "pacman --config /etc/pacman.d/crownos-offline.conf -Sp crownos-ai-cpu",
-                "file:///var/cache/crownos/mirror/crownos-ai-cpu-0.1.0-1-any.pkg.tar.zst",
-            )
             .with_command(
                 "findmnt --json --list --output SOURCE,TARGET,FSTYPE",
                 findmnt,

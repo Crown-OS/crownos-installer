@@ -685,8 +685,10 @@ pub enum Step {
     /// Trust the CrownOS repository and list it for updates, pinned to the
     /// `channel` of the release this image installs.
     AddCrownosRepository { root: String, channel: String },
-    /// Record the AI stack chosen for this machine and fetch the parts of it
-    /// the live image could not bundle.
+    /// Download the CrownOS packages that the live image does not carry, and
+    /// record them for the `crownos-setup` runner.
+    InstallOnlinePackages { root: String, packages: Vec<String> },
+    /// Record the AI stack chosen for this machine, after its packages.
     ConfigureAiAcceleration { root: String, plan: AiPlan },
     /// Record the browser and developer tools for the `crownos-setup` runner,
     /// which downloads them after the first boot.
@@ -831,6 +833,7 @@ impl Step {
             Self::InstallBaseSystem { .. } => "Installing packages".to_owned(),
             Self::ConfigureRepositories { .. } => "Configuring package repositories".to_owned(),
             Self::AddCrownosRepository { .. } => "Adding the CrownOS repository".to_owned(),
+            Self::InstallOnlinePackages { .. } => "Downloading CrownOS apps".to_owned(),
             Self::ConfigureAiAcceleration { .. } => "Setting up AI acceleration".to_owned(),
             Self::ConfigureSetup { .. } => "Saving the setup choices".to_owned(),
             Self::ConfigureGraphics { .. } => "Setting up graphics drivers".to_owned(),
@@ -1539,7 +1542,7 @@ fn system_steps(
     snapshot: &SystemSnapshot,
 ) -> Vec<Step> {
     let root = ROOT_MOUNT.to_owned();
-    let ai_plan = (oobe.install.ai_features == AiFeatures::Enabled && snapshot.ai_bundled)
+    let ai_plan = (oobe.install.ai_features == AiFeatures::Enabled && snapshot.ai_shipped)
         .then(|| ai::ai_plan(&snapshot.accelerators));
     let graphics_plan = graphics::graphics_plan(&snapshot.accelerators);
     let setup_shipped = snapshot.setup_shipped();
@@ -1548,15 +1551,24 @@ fn system_steps(
     } else {
         EspOrigin::Shared
     };
-    let mut packages = base::packages(snapshot.published_packages.as_deref().unwrap_or_default());
+    let mut packages = base::packages(
+        &snapshot.install_base_packages,
+        snapshot.published_packages.as_deref().unwrap_or_default(),
+        &snapshot.published_online,
+    );
     packages.extend(
         graphics_plan
             .offline_packages
             .iter()
             .copied()
-            .chain(ai_plan.iter().flat_map(AiPlan::offline_packages))
             .map(str::to_owned),
     );
+    let online_packages: Vec<String> = snapshot
+        .published_online
+        .iter()
+        .cloned()
+        .chain(ai_plan.iter().flat_map(AiPlan::packages).map(str::to_owned))
+        .collect();
     let mut steps = vec![
         Step::InstallBaseSystem {
             root: root.clone(),
@@ -1640,12 +1652,6 @@ fn system_steps(
             plan: graphics_plan,
         });
     }
-    if let Some(plan) = ai_plan {
-        steps.push(Step::ConfigureAiAcceleration {
-            root: root.clone(),
-            plan,
-        });
-    }
     if setup_shipped {
         steps.push(Step::ConfigureSetup {
             root: root.clone(),
@@ -1655,16 +1661,26 @@ fn system_steps(
     let windows_apps =
         (oobe.install.windows_apps == WindowsApps::Enabled).then_some(base::WINDOWS_APPS_SERVICE);
     let setup_runner = setup_shipped.then_some(setup::SERVICE);
-    // After the best-effort online transactions above: a `[crownos]` listed
-    // before its server resolves would make each of them fail at the
-    // database sync.
-    steps.extend([
-        Step::AddCrownosRepository {
+    // After the best-effort graphics transaction above: a `[crownos]` listed
+    // before its server resolves would make it fail at the database sync. The
+    // CrownOS packages that the image does not carry need `[crownos]`.
+    steps.push(Step::AddCrownosRepository {
+        root: root.clone(),
+        channel: manifest::channel_for(snapshot.published_version.as_deref().unwrap_or_default()),
+    });
+    if !online_packages.is_empty() {
+        steps.push(Step::InstallOnlinePackages {
             root: root.clone(),
-            channel: manifest::channel_for(
-                snapshot.published_version.as_deref().unwrap_or_default(),
-            ),
-        },
+            packages: online_packages,
+        });
+    }
+    if let Some(plan) = ai_plan {
+        steps.push(Step::ConfigureAiAcceleration {
+            root: root.clone(),
+            plan,
+        });
+    }
+    steps.extend([
         Step::EnableServices {
             root: root.clone(),
             units: switcheroo
@@ -3082,11 +3098,20 @@ mod tests {
             kind: AcceleratorKind::Gpu,
             device_id: 0x2684,
         };
-        let packages = |plan: &Plan| -> Vec<String> {
+        let pacstrapped = |plan: &Plan| -> Vec<String> {
             plan.steps
                 .iter()
                 .find_map(|step| match step {
                     Step::InstallBaseSystem { packages, .. } => Some(packages.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        let downloaded = |plan: &Plan| -> Vec<String> {
+            plan.steps
+                .iter()
+                .find_map(|step| match step {
+                    Step::InstallOnlinePackages { packages, .. } => Some(packages.clone()),
                     _ => None,
                 })
                 .unwrap_or_default()
@@ -3101,7 +3126,7 @@ mod tests {
             iso_plan_with(|target| target.accelerators = vec![rtx_4090]).expect("a plan");
         assert!(!configures_ai(&declined));
         assert!(
-            !packages(&declined)
+            !downloaded(&declined)
                 .iter()
                 .any(|p| p.starts_with("crownos-ai-"))
         );
@@ -3112,7 +3137,40 @@ mod tests {
         })
         .expect("a plan");
         assert!(configures_ai(&accepted));
-        assert!(packages(&accepted).iter().any(|p| p == "crownos-ai-nvidia"));
+        assert!(
+            downloaded(&accepted)
+                .iter()
+                .any(|p| p == "crownos-ai-nvidia")
+        );
+        assert!(
+            !pacstrapped(&accepted)
+                .iter()
+                .any(|p| p.starts_with("crownos-ai-")),
+            "the ISO carries no AI package"
+        );
+    }
+
+    #[test]
+    fn online_packages_are_downloaded_after_the_crownos_repository_and_not_pacstrapped() {
+        let plan = iso_plan_with(|_| {}).expect("a plan");
+        let downloaded = plan
+            .steps
+            .iter()
+            .find_map(|step| match step {
+                Step::InstallOnlinePackages { packages, .. } => Some(packages.clone()),
+                _ => None,
+            })
+            .expect("the manifest has an online package");
+        assert_eq!(downloaded, ["crownos-voice"]);
+        assert!(
+            position_of(&plan, |s| matches!(s, Step::AddCrownosRepository { .. }))
+                < position_of(&plan, |s| matches!(s, Step::InstallOnlinePackages { .. }))
+        );
+        assert!(plan.steps.iter().all(|step| match step {
+            Step::InstallBaseSystem { packages, .. } =>
+                !packages.iter().any(|p| p == "crownos-voice"),
+            _ => true,
+        }));
     }
 
     #[test]
@@ -3769,17 +3827,21 @@ mod tests {
         .expect("a plan");
         let recovery = position_of(&plan, |s| matches!(s, Step::PrepareRecovery { .. }));
         let setup_step = position_of(&plan, |s| matches!(s, Step::ConfigureSetup { .. }));
+        let repository = position_of(&plan, |s| matches!(s, Step::AddCrownosRepository { .. }));
+        let online = position_of(&plan, |s| matches!(s, Step::InstallOnlinePackages { .. }));
+        let ai = position_of(&plan, |s| matches!(s, Step::ConfigureAiAcceleration { .. }));
+        assert!(setup_step < repository);
+        assert!(repository < online);
         assert!(
-            position_of(&plan, |s| matches!(s, Step::ConfigureAiAcceleration { .. })) < setup_step
-        );
-        assert!(
-            setup_step < position_of(&plan, |s| matches!(s, Step::AddCrownosRepository { .. }))
+            online < ai,
+            "the AI config and the Maxine fetch need the AI packages"
         );
         for earlier in [
             position_of(&plan, |s| matches!(s, Step::ConfigureGraphics { .. })),
-            position_of(&plan, |s| matches!(s, Step::ConfigureAiAcceleration { .. })),
+            ai,
+            online,
             setup_step,
-            position_of(&plan, |s| matches!(s, Step::AddCrownosRepository { .. })),
+            repository,
             position_of(&plan, |s| matches!(s, Step::EnableServices { .. })),
         ] {
             assert!(earlier < recovery);
