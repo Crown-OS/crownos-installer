@@ -64,10 +64,11 @@ impl SetupSnapshot {
         })
     }
 
+    /// The tasks that the user's session waits for.
     pub fn wanted_tasks(&self) -> impl Iterator<Item = SetupTask> + '_ {
         tasks::all()
             .into_iter()
-            .filter(|runner| runner.wanted(&self.config))
+            .filter(|runner| runner.wanted(&self.config) && runner.user_session_waits())
             .map(|runner| runner.id())
     }
 

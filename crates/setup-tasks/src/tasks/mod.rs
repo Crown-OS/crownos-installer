@@ -3,6 +3,7 @@
 pub mod aur;
 pub mod browser;
 pub mod developer_tools;
+pub mod online_packages;
 pub mod playwright;
 
 #[cfg(test)]
@@ -53,6 +54,12 @@ pub trait SetupTaskRunner {
 
     fn wanted(&self, config: &SetupConfig) -> bool;
 
+    /// Whether the user's session waits for this task before it sets up the
+    /// user's own files.
+    fn user_session_waits(&self) -> bool {
+        true
+    }
+
     /// Whether [`run`](Self::run) needs the network. The pass asks only when
     /// the task is not done.
     fn needs_network(&self, context: &Context) -> bool;
@@ -63,8 +70,9 @@ pub trait SetupTaskRunner {
 }
 
 /// Each task, in the order of a pass.
-pub fn all() -> [&'static dyn SetupTaskRunner; 3] {
+pub fn all() -> [&'static dyn SetupTaskRunner; 4] {
     [
+        &online_packages::OnlinePackagesTask,
         &browser::BrowserTask,
         &developer_tools::DeveloperToolsTask,
         &playwright::PlaywrightTask,
