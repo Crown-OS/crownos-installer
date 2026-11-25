@@ -1069,7 +1069,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<Plan, Refusal> {
 
 /// Every installed system updates from the CrownOS repository, so an image
 /// without its key, its manifest or the manifest's release version cannot
-/// install one.
+/// install one. Without its base package list it cannot install a system that
+/// boots.
 fn check_image(snapshot: &SystemSnapshot) -> Result<(), Refusal> {
     if !snapshot.crownos_repo_key {
         return Err(Refusal::IncompleteImage {
@@ -1087,6 +1088,12 @@ fn check_image(snapshot: &SystemSnapshot) -> Result<(), Refusal> {
         return Err(Refusal::IncompleteImage {
             missing: "release version",
             path: base::MANIFEST_LIVE_PATH,
+        });
+    }
+    if snapshot.install_base_packages.is_empty() {
+        return Err(Refusal::IncompleteImage {
+            missing: "base package list",
+            path: base::INSTALL_BASE_LIVE_PATH,
         });
     }
     Ok(())
@@ -3071,6 +3078,41 @@ mod tests {
             plan_against(&snapshot, payload()),
             Err(Refusal::IncompleteImage { .. })
         ));
+    }
+
+    #[test]
+    fn an_image_without_the_base_package_list_is_refused() {
+        let mut snapshot = snapshot(fixture::FINDMNT_JSON_IN_RAM);
+        snapshot.install_base_packages.clear();
+        assert!(matches!(
+            plan_against(&snapshot, payload()),
+            Err(Refusal::IncompleteImage {
+                path: base::INSTALL_BASE_LIVE_PATH,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_base_package_list_of_the_image_is_pacstrapped() {
+        let plan = iso_plan_with(|_| {}).expect("a plan");
+        let pacstrapped = plan
+            .steps
+            .iter()
+            .find_map(|step| match step {
+                Step::InstallBaseSystem { packages, .. } => Some(packages.clone()),
+                _ => None,
+            })
+            .expect("pacstrap");
+        for expected in [
+            "base",
+            "sudo",
+            "mkinitcpio",
+            "zram-generator",
+            "linux-cachyos",
+        ] {
+            assert!(pacstrapped.iter().any(|p| p == expected), "{expected}");
+        }
     }
 
     #[test]

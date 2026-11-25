@@ -5,8 +5,12 @@
 
 use crownos_config::system::ONLINE_PACKAGES_PATH;
 
+use super::boot;
 use super::exec::Cmd;
+use super::plan::ESP_MOUNT_REL;
 
+/// The `-Syu` may replace the kernel, so it is copied onto the ESP again
+/// afterwards, as for the graphics packages.
 pub fn commands(root: &str, packages: &[String]) -> Vec<Cmd> {
     let mut args = vec!["-Syu", "--needed", "--noconfirm", "--"];
     args.extend(packages.iter().map(String::as_str));
@@ -16,6 +20,7 @@ pub fn commands(root: &str, packages: &[String]) -> Vec<Cmd> {
             contents: packages.iter().map(|name| format!("{name}\n")).collect(),
         },
         Cmd::best_effort(Cmd::chroot(root, "pacman", &args)),
+        boot::copy_kernel_to_esp(root, ESP_MOUNT_REL),
     ]
 }
 
@@ -38,6 +43,11 @@ mod tests {
             commands[1]
                 .to_string()
                 .contains("crownos-voice crownos-ai-cpu")
+        );
+        assert_eq!(
+            commands[2].to_string(),
+            boot::copy_kernel_to_esp("/mnt", ESP_MOUNT_REL).to_string(),
+            "the kernel goes onto the ESP again"
         );
     }
 }

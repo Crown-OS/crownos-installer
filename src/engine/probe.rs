@@ -891,6 +891,7 @@ pub(crate) mod fixture {
         pub(crate) fn with_live_image(self) -> Self {
             self.with_existing(REPO_KEY_LIVE_PATH)
                 .with_file(MANIFEST_LIVE_PATH, FIXTURE_MANIFEST)
+                .with_file(INSTALL_BASE_LIVE_PATH, FIXTURE_INSTALL_BASE)
         }
 
         pub(crate) fn journal(&self) -> Vec<String> {
@@ -1073,6 +1074,10 @@ pub(crate) mod fixture {
           {"source":"/dev/loop0","target":"/run/archiso/airootfs","fstype":"squashfs"}
        ]
     }"#;
+
+    /// The image's base package list, as crownos-iso's `packages.sh` writes it.
+    pub(crate) const FIXTURE_INSTALL_BASE: &str =
+        "base\nefibootmgr\nlinux-cachyos\nlinux-firmware\nmkinitcpio\nsudo\nnano\nzram-generator\n";
 
     /// The live image's manifest: its packages, except the online ones, are
     /// what an install pacstraps. Its repository also has the AI packages.
