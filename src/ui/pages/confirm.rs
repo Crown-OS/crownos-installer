@@ -99,7 +99,7 @@ fn acceleration_summary(backends: &[Backend]) -> String {
         ""
     };
     format!(
-        "AI features run on {}. Larger runtimes download once the new system is online.{maxine}",
+        "AI features run on {}. Their packages download during the install, or once the new system is online.{maxine}",
         names.join(", then ")
     )
 }
